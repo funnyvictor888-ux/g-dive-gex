@@ -3,6 +3,74 @@ import { useState, useEffect, useCallback } from "react";
 const SERVER_URL = window.location.hostname === "localhost" ? "http://localhost:7432" : "https://web-production-909e6.up.railway.app";
 const T = { bg:"#0d1117",card:"#161b22",card2:"#1c2128",border:"#30363d",text:"#e6edf3",muted:"#7d8590",green:"#3fb950",red:"#f85149",orange:"#f78166",gold:"#e3b341",blue:"#79c0ff",purple:"#bc8cff" };
 
+const RISK_CONFIG = {
+  initialCapital: 10000,
+  maxDailyLossPct: 0.02,
+  maxDrawdownPct: 0.10,
+  maxOpenPositions: 2,
+  killSwitchEnabled: true,
+};
+
+function getRiskStatus(trades) {
+  const today = new Date().toISOString().slice(0,10);
+  const capital = RISK_CONFIG.initialCapital;
+  const todayTrades = trades.filter(t => t.status==="CLOSED" && t.exitDate && t.exitDate.startsWith(today));
+  const dailyPnl = todayTrades.reduce((a,t) => a+(t.pnl||0), 0);
+  const dailyLossLimit = capital * RISK_CONFIG.maxDailyLossPct;
+  const dailyLimitHit = dailyPnl <= -dailyLossLimit;
+  let peak=capital, equity=capital, maxDD=0;
+  const closed = trades.filter(t=>t.status==="CLOSED").sort((a,b)=>new Date(a.exitDate)-new Date(b.exitDate));
+  closed.forEach(t=>{equity+=(t.pnl||0);if(equity>peak)peak=equity;const dd=(peak-equity)/peak;if(dd>maxDD)maxDD=dd;});
+  const drawdownLimitHit = maxDD >= RISK_CONFIG.maxDrawdownPct;
+  const openCount = trades.filter(t=>t.status==="OPEN").length;
+  const maxPosHit = openCount >= RISK_CONFIG.maxOpenPositions;
+  const killSwitch = RISK_CONFIG.killSwitchEnabled && (dailyLimitHit || drawdownLimitHit);
+  return {dailyPnl:+dailyPnl.toFixed(2),dailyLossLimit:+dailyLossLimit.toFixed(2),dailyLimitHit,maxDD:+(maxDD*100).toFixed(2),drawdownLimitHit,openCount,maxPosHit,killSwitch,equity:+equity.toFixed(2),peak:+peak.toFixed(2)};
+}
+
+function runBacktest(candles) {
+  if(!candles||candles.length<60)return null;
+  const closes=candles.map(c=>c.c),highs=candles.map(c=>c.h),lows=candles.map(c=>c.l);
+  function ema(arr,p){const k=2/(p+1);let e=arr[0];return arr.map(v=>{e=v*k+e*(1-k);return e;});}
+  function rsiArr(arr,p=14){let g=0,l=0;for(let i=1;i<=p;i++){const d=arr[i]-arr[i-1];d>=0?g+=d:l-=d;}let ag=g/p,al=l/p;const r=new Array(p).fill(null);r.push(al===0?100:100-100/(1+ag/al));for(let i=p+1;i<arr.length;i++){const d=arr[i]-arr[i-1];ag=(ag*(p-1)+Math.max(d,0))/p;al=(al*(p-1)+Math.max(-d,0))/p;r.push(al===0?100:100-100/(1+ag/al));}return r;}
+  function atr(h,l,c,p=14){const tr=h.map((hv,i)=>i===0?hv-l[i]:Math.max(hv-l[i],Math.abs(hv-c[i-1]),Math.abs(l[i]-c[i-1])));return ema(tr,p);}
+  const ema9=ema(closes,9),ema21=ema(closes,21),rsis=rsiArr(closes,14);
+  const macdLine=ema(closes,12).map((v,i)=>v-ema(closes,26)[i]);
+  const sig=ema(macdLine,9),atrs=atr(highs,lows,closes,14);
+  const trades=[];let inTrade=false,tradeDir=null,entry=0,stop=0,tp=0,tradeSize=0;
+  let equity=10000,peak=10000,maxDD=0;
+  for(let i=30;i<closes.length-1;i++){
+    const price=closes[i],atrV=atrs[i];
+    if(inTrade){
+      if(tradeDir==="LONG"){
+        if(price<=stop){const pnl=(stop-entry)*tradeSize;trades.push({pnl:+pnl.toFixed(2),result:"STOP"});equity+=pnl;inTrade=false;}
+        else if(price>=tp){const pnl=(tp-entry)*tradeSize;trades.push({pnl:+pnl.toFixed(2),result:"TP"});equity+=pnl;inTrade=false;}
+      } else {
+        if(price>=stop){const pnl=(entry-stop)*tradeSize;trades.push({pnl:+pnl.toFixed(2),result:"STOP"});equity+=pnl;inTrade=false;}
+        else if(price<=tp){const pnl=(entry-tp)*tradeSize;trades.push({pnl:+pnl.toFixed(2),result:"TP"});equity+=pnl;inTrade=false;}
+      }
+      if(equity>peak)peak=equity;const dd=(peak-equity)/peak;if(dd>maxDD)maxDD=dd;
+    }
+    if(!inTrade&&atrV>0){
+      const bull=ema9[i]>ema21[i]&&rsis[i]>50&&rsis[i]<70&&macdLine[i]>sig[i];
+      const bear=ema9[i]<ema21[i]&&rsis[i]<50&&rsis[i]>30&&macdLine[i]<sig[i];
+      const riskAmt=equity*0.04;
+      if(bull){entry=price;stop=price-atrV*2;tp=price+atrV*6;tradeSize=riskAmt/(atrV*2);inTrade=true;tradeDir="LONG";}
+      else if(bear){entry=price;stop=price+atrV*2;tp=price-atrV*6;tradeSize=riskAmt/(atrV*2);inTrade=true;tradeDir="SHORT";}
+    }
+  }
+  if(!trades.length)return null;
+  const wins=trades.filter(t=>t.pnl>0),losses=trades.filter(t=>t.pnl<0);
+  const totalPnl=trades.reduce((a,t)=>a+t.pnl,0);
+  const winRate=wins.length/trades.length*100;
+  const avgWin=wins.length?wins.reduce((a,t)=>a+t.pnl,0)/wins.length:0;
+  const avgLoss=losses.length?Math.abs(losses.reduce((a,t)=>a+t.pnl,0)/losses.length):1;
+  const pf=avgLoss>0?Math.abs(wins.reduce((a,t)=>a+t.pnl,0))/Math.abs(losses.reduce((a,t)=>a+t.pnl,0)||1):0;
+  const meanP=totalPnl/trades.length,stdP=Math.sqrt(trades.reduce((a,t)=>a+(t.pnl-meanP)**2,0)/trades.length);
+  const sharpe=stdP>0?(meanP/stdP)*Math.sqrt(12):0;
+  return {trades:trades.length,wins:wins.length,winRate:+winRate.toFixed(1),totalPnl:+totalPnl.toFixed(2),finalEquity:+equity.toFixed(2),maxDD:+(maxDD*100).toFixed(2),profitFactor:+pf.toFixed(2),sharpe:+sharpe.toFixed(2),avgWin:+avgWin.toFixed(2),avgLoss:+avgLoss.toFixed(2),expectancy:+((winRate/100*avgWin-(1-winRate/100)*avgLoss)).toFixed(2)};
+}
+
 const DEMO = {
   spot:68129,ts:"2026-03-06 15:59 EST",total_net_gex:3055.2,
   put_support:60000,call_resistance:75000,hvl:67000,
@@ -306,7 +374,7 @@ function buildIVOIData(d){
 const REGIME_INFO={IDEAL_LONG:{txt:"İDEAL LONG",color:T.green,sub:"GEX pozitif · opsiyonlar güçlü destek"},BULLISH_HIGH_VOL:{txt:"BULLISH HIGH VOL",color:T.gold,sub:"Long açılabilir, stop sıkı · vol yüksek"},BEARISH_VOLATILE:{txt:"BEARISH VOLATİL",color:T.red,sub:"Short setup · yüksek volatilite"},BEARISH_LOW_VOL:{txt:"BEARISH SIKIŞ",color:T.red,sub:"Short setup · düşük vol"},HIGH_RISK:{txt:"⚠ YÜKSEK RİSK",color:T.red,sub:"Short gamma + vol · kill-switch"},NEUTRAL:{txt:"NÖTR / BEKLE",color:T.muted,sub:"Net yön yok · bekleme modu"}};
 
 export default function App(){
-  const[data,setData]=useState(DEMO);const[live,setLive]=useState(false);const[busy,setBusy]=useState(false);const[clock,setClock]=useState("");const[confScore,setConfScore]=useState(null);
+  const[data,setData]=useState(DEMO);const[live,setLive]=useState(false);const[busy,setBusy]=useState(false);const[clock,setClock]=useState("");const[confScore,setConfScore]=useState(null);const[riskStatus,setRiskStatus]=useState(null);const[btResult,setBtResult]=useState(null);
   const refresh=useCallback(async()=>{setBusy(true);const[d,bp]=await Promise.all([fetchLive(),fetchBinancePrice()]);if(d){setData(d);setLive(true);}else{setData(bp?{...DEMO,spot:bp}:DEMO);setLive(false);}setClock(new Date().toLocaleTimeString("tr-TR"));setBusy(false);},[]);
 
   // Auto-trade: koşullar sağlanınca journal'a otomatik kaydet
@@ -347,6 +415,8 @@ export default function App(){
     }catch(e){console.error("autotrade err",e);}
   },[data,confScore]);
   useEffect(()=>{refresh();const id=setInterval(refresh,4*60*1000);return()=>clearInterval(id);},[refresh]);
+  useEffect(()=>{try{const t=JSON.parse(localStorage.getItem("gdive:journal:v2")||"[]");setRiskStatus(getRiskStatus(t));}catch(e){}},[data]);
+  useEffect(()=>{fetchOHLCV("4h",500).then(candles=>{if(candles){const r=runBacktest(candles);setBtResult(r);}});},[]);
 
   useEffect(()=>{
     if(!data||data._source==="demo")return;
@@ -354,6 +424,8 @@ export default function App(){
       const JKEY="gdive:journal:v2";
       const trades=JSON.parse(localStorage.getItem(JKEY)||"[]");
       const spot=data.spot;
+      const rs=getRiskStatus(trades);setRiskStatus(rs);
+      if(rs.killSwitch){console.warn("Kill Switch aktif");return;}
       const bullish=["IDEAL_LONG","BULLISH_HIGH_VOL"].includes(data.regime)&&spot>data.hvl&&data.total_net_gex>0;
       const bearish=["BEARISH_VOLATILE","BEARISH_LOW_VOL","HIGH_RISK"].includes(data.regime)&&spot<data.hvl&&data.total_net_gex<0;
       const confOK=confScore&&Math.abs(confScore.score)>=2;
@@ -560,6 +632,45 @@ export default function App(){
             </div>
           </Card>
         </div>
+        {riskStatus&&(
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
+            {[
+              {label:"Gunluk P&L",value:(riskStatus.dailyPnl>=0?"+":"")+riskStatus.dailyPnl.toFixed(0)+" / -$"+riskStatus.dailyLossLimit,color:riskStatus.dailyLimitHit?T.red:riskStatus.dailyPnl>=0?T.green:T.orange,alert:riskStatus.dailyLimitHit},
+              {label:"Max Drawdown",value:riskStatus.maxDD+"% / limit %"+(RISK_CONFIG.maxDrawdownPct*100),color:riskStatus.drawdownLimitHit?T.red:riskStatus.maxDD>5?T.orange:T.green,alert:riskStatus.drawdownLimitHit},
+              {label:"Acik Pozisyon",value:riskStatus.openCount+" / max "+RISK_CONFIG.maxOpenPositions,color:riskStatus.maxPosHit?T.orange:T.green},
+              {label:"Kill Switch",value:riskStatus.killSwitch?"AKTIF":"NORMAL",color:riskStatus.killSwitch?T.red:T.green,alert:riskStatus.killSwitch},
+            ].map((s,i)=>(
+              <div key={i} style={{background:s.alert?"${T.red}15":T.card,border:"1px solid "+(s.alert?s.color:T.border),borderTop:"3px solid "+s.color,borderRadius:8,padding:"10px 14px"}}>
+                <div style={{color:T.muted,fontSize:9.5,textTransform:"uppercase",marginBottom:4}}>{s.label}</div>
+                <div style={{color:s.color,fontWeight:700,fontSize:13,fontFamily:"monospace"}}>{s.value}</div>
+              </div>
+            ))}
+          </div>
+        )}
+        {btResult&&(
+          <Card>
+            <ST>Backtest - 4H BTC 500 Bar 2x Kaldirac ATR Bazli</ST>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:10}}>
+              {[
+                {label:"Trade",value:btResult.trades,color:T.muted},
+                {label:"Win Rate",value:btResult.winRate+"%",color:btResult.winRate>=50?T.green:T.orange},
+                {label:"Profit Factor",value:btResult.profitFactor+"x",color:btResult.profitFactor>=1.5?T.green:btResult.profitFactor>=1?T.gold:T.red},
+                {label:"Sharpe",value:btResult.sharpe,color:btResult.sharpe>=1?T.green:btResult.sharpe>=0?T.gold:T.red},
+                {label:"Max DD",value:btResult.maxDD+"%",color:btResult.maxDD<10?T.green:btResult.maxDD<20?T.orange:T.red},
+                {label:"Toplam PnL",value:(btResult.totalPnl>=0?"+":"")+btResult.totalPnl.toFixed(0),color:btResult.totalPnl>=0?T.green:T.red},
+                {label:"Avg Win",value:"+$"+btResult.avgWin.toFixed(0),color:T.green},
+                {label:"Avg Loss",value:"-$"+btResult.avgLoss.toFixed(0),color:T.red},
+                {label:"Expectancy",value:(btResult.expectancy>=0?"+":"")+btResult.expectancy.toFixed(0),color:btResult.expectancy>=0?T.green:T.red},
+                {label:"Final Equity",value:"$"+btResult.finalEquity.toFixed(0),color:btResult.finalEquity>=10000?T.green:T.red},
+              ].map((s,i)=>(
+                <div key={i} style={{padding:"8px 10px",background:T.card2,border:"1px solid "+T.border,borderRadius:6}}>
+                  <div style={{color:T.muted,fontSize:9.5,textTransform:"uppercase",marginBottom:3}}>{s.label}</div>
+                  <div style={{color:s.color,fontWeight:700,fontSize:14,fontFamily:"monospace"}}>{s.value}</div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
         <div style={{borderTop:`1px solid ${T.border}`,paddingTop:10,display:"flex",justifyContent:"space-between",fontSize:10,color:T.muted}}>
           <span>G-DIVE V4 Options Intelligence Module · Deribit Public API</span>
           <span>{live?`● Canlı · ${clock}`:`◆ Demo modu`}</span>

@@ -347,6 +347,103 @@ export default function App(){
     }catch(e){console.error("autotrade err",e);}
   },[data,confScore]);
   useEffect(()=>{refresh();const id=setInterval(refresh,4*60*1000);return()=>clearInterval(id);},[refresh]);
+
+  useEffect(()=>{
+    if(!data||data._source==="demo")return;
+    try{
+      const JKEY="gdive:journal:v2";
+      const trades=JSON.parse(localStorage.getItem(JKEY)||"[]");
+      const spot=data.spot;
+      const bullish=["IDEAL_LONG","BULLISH_HIGH_VOL"].includes(data.regime)&&spot>data.hvl&&data.total_net_gex>0;
+      const bearish=["BEARISH_VOLATILE","BEARISH_LOW_VOL","HIGH_RISK"].includes(data.regime)&&spot<data.hvl&&data.total_net_gex<0;
+      const confOK=confScore&&Math.abs(confScore.score)>=2;
+      const ivOK=(data.iv_rank||0)<75;
+      let changed=false;
+
+      const updated=trades.map(t=>{
+        if(t.status!=="OPEN")return t;
+        if(t.dir==="LONG"){
+          if(spot<=t.stop){
+            changed=true;
+            const pnl=+((t.stop-t.entry)*t.size).toFixed(2);
+            alert("STOP HIT - LONG kapandi @ $"+t.stop+" PnL: $"+pnl);
+            return{...t,status:"CLOSED",exitPrice:t.stop,exitDate:new Date().toISOString().slice(0,16).replace("T"," "),pnl,rr:-1,notes:(t.notes||"")+" | STOP"};
+          }
+          if(bearish){
+            changed=true;
+            const pnl=+((spot-t.entry)*t.size).toFixed(2);
+            const rr=+((spot-t.entry)/(t.entry-t.stop)).toFixed(2);
+            alert("REJIM SHORT - LONG kapandi @ $"+spot+" PnL: $"+pnl);
+            return{...t,status:"CLOSED",exitPrice:spot,exitDate:new Date().toISOString().slice(0,16).replace("T"," "),pnl,rr,notes:(t.notes||"")+" | Rejim SHORT"};
+          }
+          if(spot>=t.tp&&!t.partialClosed){
+            changed=true;
+            if(bullish){
+              const half=+(t.size/2).toFixed(4);
+              const halfPnl=+((t.tp-t.entry)*half).toFixed(2);
+              alert("TP %50 HIT @ $"+t.tp+" PnL: $"+halfPnl+" - Kalan devam, yeni TP: $"+data.call_resistance);
+              return{...t,size:half,partialClosed:true,partialPnl:halfPnl,tp:data.call_resistance,notes:(t.notes||"")+" | %50 @ $"+t.tp};
+            } else {
+              const pnl=+((t.tp-t.entry)*t.size).toFixed(2);
+              const rr=+((t.tp-t.entry)/(t.entry-t.stop)).toFixed(2);
+              alert("TP %100 HIT @ $"+t.tp+" PnL: $"+pnl);
+              return{...t,status:"CLOSED",exitPrice:t.tp,exitDate:new Date().toISOString().slice(0,16).replace("T"," "),pnl,rr,notes:(t.notes||"")+" | TP"};
+            }
+          }
+        }
+        if(t.dir==="SHORT"){
+          if(spot>=t.stop){
+            changed=true;
+            const pnl=+((t.entry-t.stop)*t.size).toFixed(2);
+            alert("STOP HIT - SHORT kapandi @ $"+t.stop+" PnL: $"+pnl);
+            return{...t,status:"CLOSED",exitPrice:t.stop,exitDate:new Date().toISOString().slice(0,16).replace("T"," "),pnl,rr:-1,notes:(t.notes||"")+" | STOP"};
+          }
+          if(bullish){
+            changed=true;
+            const pnl=+((t.entry-spot)*t.size).toFixed(2);
+            const rr=+((t.entry-spot)/(t.stop-t.entry)).toFixed(2);
+            alert("REJIM LONG - SHORT kapandi @ $"+spot+" PnL: $"+pnl);
+            return{...t,status:"CLOSED",exitPrice:spot,exitDate:new Date().toISOString().slice(0,16).replace("T"," "),pnl,rr,notes:(t.notes||"")+" | Rejim LONG"};
+          }
+          if(spot<=t.tp&&!t.partialClosed){
+            changed=true;
+            if(bearish){
+              const half=+(t.size/2).toFixed(4);
+              const halfPnl=+((t.entry-t.tp)*half).toFixed(2);
+              alert("TP %50 HIT @ $"+t.tp+" PnL: $"+halfPnl+" - Kalan devam, yeni TP: $"+data.put_support);
+              return{...t,size:half,partialClosed:true,partialPnl:halfPnl,tp:data.put_support,notes:(t.notes||"")+" | %50 @ $"+t.tp};
+            } else {
+              const pnl=+((t.entry-t.tp)*t.size).toFixed(2);
+              const rr=+((t.entry-t.tp)/(t.stop-t.entry)).toFixed(2);
+              alert("TP %100 HIT @ $"+t.tp+" PnL: $"+pnl);
+              return{...t,status:"CLOSED",exitPrice:t.tp,exitDate:new Date().toISOString().slice(0,16).replace("T"," "),pnl,rr,notes:(t.notes||"")+" | TP"};
+            }
+          }
+        }
+        return t;
+      });
+
+      if(changed)localStorage.setItem(JKEY,JSON.stringify(updated));
+
+      const today=new Date().toISOString().slice(0,10);
+      const hasOpen=updated.find(t=>t.date&&t.date.startsWith(today)&&t.status==="OPEN");
+      if(!hasOpen&&confOK&&ivOK){
+        if(bullish){
+          const entry=spot,stop=data.put_support,tp=data.call_resistance;
+          const size=+(200/Math.abs(entry-stop)).toFixed(4);
+          const trade={id:Date.now(),date:new Date().toISOString().slice(0,16).replace("T"," "),dir:"LONG",entry,stop,tp,size,regime:data.regime,signal:"Auto·L·Konf"+confScore.score,notes:"Auto LONG. GEX:"+data.total_net_gex+"M IV:"+data.front_iv+"%",status:"OPEN",pnl:null,rr:null,exitPrice:null,exitDate:null,partialClosed:false};
+          localStorage.setItem(JKEY,JSON.stringify([trade,...updated]));
+          alert("AUTO LONG @ $"+entry+" Stop:$"+stop+" TP:$"+tp);
+        } else if(bearish){
+          const entry=spot,stop=data.call_resistance,tp=data.put_support;
+          const size=+(200/Math.abs(entry-stop)).toFixed(4);
+          const trade={id:Date.now(),date:new Date().toISOString().slice(0,16).replace("T"," "),dir:"SHORT",entry,stop,tp,size,regime:data.regime,signal:"Auto·S·Konf"+confScore.score,notes:"Auto SHORT. GEX:"+data.total_net_gex+"M IV:"+data.front_iv+"%",status:"OPEN",pnl:null,rr:null,exitPrice:null,exitDate:null,partialClosed:false};
+          localStorage.setItem(JKEY,JSON.stringify([trade,...updated]));
+          alert("AUTO SHORT @ $"+entry+" Stop:$"+stop+" TP:$"+tp);
+        }
+      }
+    }catch(e){console.error("posmgmt",e);}
+  },[data,confScore]);
   const d=data,gammaPos=d.total_net_gex>0;
   const gexRows=buildGEXData(d),ivoiRows=buildIVOIData(d);
   const regime=REGIME_INFO[d.regime]||REGIME_INFO.NEUTRAL;

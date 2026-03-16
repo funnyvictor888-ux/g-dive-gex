@@ -30,15 +30,24 @@ def deribit_get(method, params={}):
 
 # ── Spot fiyat ─────────────────────────────────────────────────────
 def fetch_spot():
-    try:
-        from urllib.request import urlopen, Request
-        req = Request("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", headers={"User-Agent":"gdive/1.0"})
-        with urlopen(req, timeout=8) as r:
-            import json
-            return float(json.loads(r.read())["price"])
-    except Exception as e:
-        print(f"[ERR] spot/binance: {e}")
-        return None
+    urls = [
+        ("coingecko", "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"),
+        ("binance", "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"),
+    ]
+    for name, url in urls:
+        try:
+            from urllib.request import urlopen, Request
+            req = Request(url, headers={"User-Agent":"gdive/1.0"})
+            with urlopen(req, timeout=8) as r:
+                import json
+                data = json.loads(r.read())
+                if name == "coingecko":
+                    return float(data["bitcoin"]["usd"])
+                else:
+                    return float(data["price"])
+        except Exception as e:
+            print(f"[ERR] spot/{name}: {e}")
+    return None
 
 # ── Tüm BTC opsiyonları (özet) ─────────────────────────────────────
 def fetch_book_summary():
@@ -327,7 +336,7 @@ if __name__ == "__main__":
     # Arka planda ilk fetch
     threading.Thread(target=get_data, daemon=True).start()
 
-    server = HTTPServer(("localhost", PORT), Handler)
+    server = HTTPServer(("0.0.0.0", PORT), Handler)
     print(f"  ✓ Sunucu hazır → http://localhost:{PORT}")
     print(f"  Durdurmak için: Ctrl+C")
     print(f"")

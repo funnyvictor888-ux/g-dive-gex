@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 
-const SERVER_URL = "http://localhost:7432";
+const SERVER_URL = window.location.hostname === "localhost" ? "http://localhost:7432" : "https://web-production-909e6.up.railway.app";
 const T = { bg:"#0d1117",card:"#161b22",card2:"#1c2128",border:"#30363d",text:"#e6edf3",muted:"#7d8590",green:"#3fb950",red:"#f85149",orange:"#f78166",gold:"#e3b341",blue:"#79c0ff",purple:"#bc8cff" };
 
 const DEMO = {

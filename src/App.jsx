@@ -432,13 +432,13 @@ export default function App(){
       if(!hasOpen&&confOK&&ivOK){
         if(bullish){
           const entry=spot,stop=data.put_support,tp=data.call_resistance;
-          const size=+(200/Math.abs(entry-stop)).toFixed(4);
+          const size=+(400/Math.abs(entry-stop)).toFixed(4); // 2x leverage
           const trade={id:Date.now(),date:new Date().toISOString().slice(0,16).replace("T"," "),dir:"LONG",entry,stop,tp,size,regime:data.regime,signal:"Auto·L·Konf"+confScore.score,notes:"Auto LONG. GEX:"+data.total_net_gex+"M IV:"+data.front_iv+"%",status:"OPEN",pnl:null,rr:null,exitPrice:null,exitDate:null,partialClosed:false};
           localStorage.setItem(JKEY,JSON.stringify([trade,...updated]));
           alert("AUTO LONG @ $"+entry+" Stop:$"+stop+" TP:$"+tp);
         } else if(bearish){
           const entry=spot,stop=data.call_resistance,tp=data.put_support;
-          const size=+(200/Math.abs(entry-stop)).toFixed(4);
+          const size=+(400/Math.abs(entry-stop)).toFixed(4); // 2x leverage
           const trade={id:Date.now(),date:new Date().toISOString().slice(0,16).replace("T"," "),dir:"SHORT",entry,stop,tp,size,regime:data.regime,signal:"Auto·S·Konf"+confScore.score,notes:"Auto SHORT. GEX:"+data.total_net_gex+"M IV:"+data.front_iv+"%",status:"OPEN",pnl:null,rr:null,exitPrice:null,exitDate:null,partialClosed:false};
           localStorage.setItem(JKEY,JSON.stringify([trade,...updated]));
           alert("AUTO SHORT @ $"+entry+" Stop:$"+stop+" TP:$"+tp);

@@ -10,7 +10,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 
-PORT = 7432
+import os
+PORT = int(os.environ.get("PORT", 7432))
 CACHE_TTL = 60  # saniye
 BTC_PERP = "BTC-PERPETUAL"
 

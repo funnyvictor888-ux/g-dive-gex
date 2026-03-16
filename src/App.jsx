@@ -381,8 +381,9 @@ export default function App(){
             if(bullish){
               const half=+(t.size/2).toFixed(4);
               const halfPnl=+((t.tp-t.entry)*half).toFixed(2);
-              alert("TP %50 HIT @ $"+t.tp+" PnL: $"+halfPnl+" - Kalan devam, yeni TP: $"+data.call_resistance);
-              return{...t,size:half,partialClosed:true,partialPnl:halfPnl,tp:data.call_resistance,notes:(t.notes||"")+" | %50 @ $"+t.tp};
+              const nTP=data.call_walls&&data.call_walls.find(w=>w>t.tp)||t.tp*1.03;
+              alert("TP %50 HIT @ $"+t.tp+" PnL: $"+halfPnl+" - Kalan devam, yeni TP: $"+nTP);
+              return{...t,size:half,partialClosed:true,partialPnl:halfPnl,tp:nTP,notes:(t.notes||"")+" | %50 @ $"+t.tp};
             } else {
               const pnl=+((t.tp-t.entry)*t.size).toFixed(2);
               const rr=+((t.tp-t.entry)/(t.entry-t.stop)).toFixed(2);
@@ -410,8 +411,9 @@ export default function App(){
             if(bearish){
               const half=+(t.size/2).toFixed(4);
               const halfPnl=+((t.entry-t.tp)*half).toFixed(2);
-              alert("TP %50 HIT @ $"+t.tp+" PnL: $"+halfPnl+" - Kalan devam, yeni TP: $"+data.put_support);
-              return{...t,size:half,partialClosed:true,partialPnl:halfPnl,tp:data.put_support,notes:(t.notes||"")+" | %50 @ $"+t.tp};
+              const nTP=data.put_walls&&data.put_walls.slice().sort((a,b)=>b-a).find(w=>w<t.tp)||t.tp*0.97;
+              alert("TP %50 HIT @ $"+t.tp+" PnL: $"+halfPnl+" - Kalan devam, yeni TP: $"+nTP);
+              return{...t,size:half,partialClosed:true,partialPnl:halfPnl,tp:nTP,notes:(t.notes||"")+" | %50 @ $"+t.tp};
             } else {
               const pnl=+((t.entry-t.tp)*t.size).toFixed(2);
               const rr=+((t.entry-t.tp)/(t.stop-t.entry)).toFixed(2);

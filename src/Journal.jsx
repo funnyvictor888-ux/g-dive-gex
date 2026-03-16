@@ -75,6 +75,57 @@ const ST = ({ children }) => (
   <div style={{ color: T.muted, fontSize: 10.5, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10, fontWeight: 600 }}>{children}</div>
 );
 
+
+function TradeRow({ trade, price, onClose, onDelete }) {
+  const [exitVal, setExitVal] = useState("");
+  const isOpen = trade.status === "OPEN";
+  const dirColor = trade.dir === "LONG" ? T.green : T.red;
+  const pnlColor = trade.pnl > 0 ? T.green : trade.pnl < 0 ? T.red : T.muted;
+  return (
+    <div style={{ background: T.card2, border: `1px solid ${isOpen ? T.gold + "60" : T.border}`, borderLeft: `3px solid ${isOpen ? T.gold : pnlColor || T.border}`, borderRadius: 6, padding: "10px 14px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+          <span style={{ color: dirColor, fontWeight: 900, fontSize: 13 }}>{trade.dir === "LONG" ? "▲" : "▼"} {trade.dir}</span>
+          <span style={{ color: T.muted, fontSize: 10 }}>{trade.date}</span>
+          {isOpen && <span style={{ color: T.gold, fontSize: 9, background: `${T.gold}20`, border: `1px solid ${T.gold}40`, padding: "1px 6px", borderRadius: 99 }}>AÇIK</span>}
+          {trade.regime && <span style={{ color: T.muted, fontSize: 9 }}>{trade.regime}</span>}
+          {trade.signal && <span style={{ color: T.purple, fontSize: 9 }}>{trade.signal}</span>}
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {!isOpen && trade.pnl !== null && (
+            <span style={{ color: pnlColor, fontWeight: 700, fontSize: 13, fontFamily: "monospace" }}>
+              {fmtPnl(trade.pnl)} ({trade.rr > 0 ? "+" : ""}{trade.rr}R)
+            </span>
+          )}
+          {isOpen && price && <span style={{ color: T.blue, fontSize: 11, fontFamily: "monospace" }}>Live: {fmtK(price)}</span>}
+          <button onClick={() => onDelete(trade.id)} style={{ background: "transparent", border: `1px solid ${T.border}`, color: T.muted, padding: "2px 8px", borderRadius: 4, cursor: "pointer", fontSize: 9 }}>✕</button>
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 20, marginTop: 8, fontSize: 10.5 }}>
+        <span>Giriş: <span style={{ color: T.text, fontWeight: 700 }}>{fmtK(trade.entry)}</span></span>
+        <span>Stop: <span style={{ color: T.red }}>{fmtK(trade.stop)}</span></span>
+        <span>TP: <span style={{ color: T.green }}>{fmtK(trade.tp)}</span></span>
+        <span>Lot: <span style={{ color: T.muted }}>{trade.size} BTC</span></span>
+        {!isOpen && <span>Çıkış: <span style={{ color: T.text }}>{fmtK(trade.exitPrice)}</span></span>}
+        {!isOpen && <span>Tarih: <span style={{ color: T.muted }}>{trade.exitDate}</span></span>}
+      </div>
+      {trade.notes && <div style={{ marginTop: 6, color: T.muted, fontSize: 10.5, fontStyle: "italic", borderTop: `1px solid ${T.border}`, paddingTop: 6 }}>{trade.notes}</div>}
+      {isOpen && (
+        <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
+          <input type="number" value={exitVal} onChange={e => setExitVal(e.target.value)} placeholder="Çıkış fiyatı..."
+            style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 4, padding: "5px 8px", color: T.text, fontFamily: "monospace", fontSize: 11, width: 140 }} />
+          <button onClick={() => price && setExitVal(price.toFixed(0))} style={{ background: `${T.blue}20`, border: `1px solid ${T.blue}`, color: T.blue, padding: "5px 10px", borderRadius: 4, cursor: "pointer", fontSize: 10 }}>
+            Market {fmtK(price)}
+          </button>
+          <button onClick={() => onClose(trade.id, exitVal || price)} style={{ background: `${T.green}20`, border: `1px solid ${T.green}`, color: T.green, padding: "5px 14px", borderRadius: 4, cursor: "pointer", fontFamily: "monospace", fontSize: 11, fontWeight: 700 }}>
+            ✓ Kapat
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Journal() {
   const [trades, setTrades] = useState([]);
   const [price, setPrice] = useState(null);
@@ -253,64 +304,9 @@ export default function Journal() {
           )}
 
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {filtered.map(trade => {
-              const isOpen = trade.status === "OPEN";
-              const dirColor = trade.dir === "LONG" ? T.green : T.red;
-              const pnlColor = trade.pnl > 0 ? T.green : trade.pnl < 0 ? T.red : T.muted;
-              const [exitVal, setExitVal] = useState("");
-              return (
-                <div key={trade.id} style={{ background: T.card2, border: `1px solid ${isOpen ? T.gold + "60" : T.border}`, borderLeft: `3px solid ${isOpen ? T.gold : pnlColor || T.border}`, borderRadius: 6, padding: "10px 14px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                    <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                      <span style={{ color: dirColor, fontWeight: 900, fontSize: 13 }}>{trade.dir === "LONG" ? "▲" : "▼"} {trade.dir}</span>
-                      <span style={{ color: T.muted, fontSize: 10 }}>{trade.date}</span>
-                      {isOpen && <span style={{ color: T.gold, fontSize: 9, background: `${T.gold}20`, border: `1px solid ${T.gold}40`, padding: "1px 6px", borderRadius: 99 }}>AÇIK</span>}
-                      {trade.regime && <span style={{ color: T.muted, fontSize: 9 }}>{trade.regime}</span>}
-                      {trade.signal && <span style={{ color: T.purple, fontSize: 9 }}>{trade.signal}</span>}
-                    </div>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      {!isOpen && trade.pnl !== null && (
-                        <span style={{ color: pnlColor, fontWeight: 700, fontSize: 13, fontFamily: "monospace" }}>
-                          {fmtPnl(trade.pnl)} ({trade.rr > 0 ? "+" : ""}{trade.rr}R)
-                        </span>
-                      )}
-                      {isOpen && price && (
-                        <span style={{ color: T.blue, fontSize: 11, fontFamily: "monospace" }}>
-                          Live: {fmtK(price)}
-                        </span>
-                      )}
-                      <button onClick={() => deleteTrade(trade.id)} style={{ background: "transparent", border: `1px solid ${T.border}`, color: T.muted, padding: "2px 8px", borderRadius: 4, cursor: "pointer", fontSize: 9 }}>✕</button>
-                    </div>
-                  </div>
-
-                  <div style={{ display: "flex", gap: 20, marginTop: 8, fontSize: 10.5 }}>
-                    <span>Giriş: <span style={{ color: T.text, fontWeight: 700 }}>{fmtK(trade.entry)}</span></span>
-                    <span>Stop: <span style={{ color: T.red }}>{fmtK(trade.stop)}</span></span>
-                    <span>TP: <span style={{ color: T.green }}>{fmtK(trade.tp)}</span></span>
-                    <span>Lot: <span style={{ color: T.muted }}>{trade.size} BTC</span></span>
-                    {!isOpen && <span>Çıkış: <span style={{ color: T.text }}>{fmtK(trade.exitPrice)}</span></span>}
-                    {!isOpen && <span>Tarih: <span style={{ color: T.muted }}>{trade.exitDate}</span></span>}
-                  </div>
-
-                  {trade.notes && (
-                    <div style={{ marginTop: 6, color: T.muted, fontSize: 10.5, fontStyle: "italic", borderTop: `1px solid ${T.border}`, paddingTop: 6 }}>{trade.notes}</div>
-                  )}
-
-                  {isOpen && (
-                    <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
-                      <input type="number" value={exitVal} onChange={e => setExitVal(e.target.value)} placeholder="Çıkış fiyatı..."
-                        style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 4, padding: "5px 8px", color: T.text, fontFamily: "monospace", fontSize: 11, width: 140 }} />
-                      <button onClick={() => { if (price) setExitVal(price.toFixed(0)); }} style={{ background: `${T.blue}20`, border: `1px solid ${T.blue}`, color: T.blue, padding: "5px 10px", borderRadius: 4, cursor: "pointer", fontSize: 10 }}>
-                        Market {fmtK(price)}
-                      </button>
-                      <button onClick={() => closeTrade(trade.id, exitVal || price)} style={{ background: `${T.green}20`, border: `1px solid ${T.green}`, color: T.green, padding: "5px 14px", borderRadius: 4, cursor: "pointer", fontFamily: "monospace", fontSize: 11, fontWeight: 700 }}>
-                        ✓ Kapat
-                      </button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+            {filtered.map(trade => (
+              <TradeRow key={trade.id} trade={trade} price={price} onClose={closeTrade} onDelete={deleteTrade} />
+            ))}
           </div>
         </Card>
 

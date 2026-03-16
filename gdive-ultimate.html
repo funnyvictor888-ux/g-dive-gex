@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>G-DIVE Ultimate Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #0a0e1a;
+            color: #e8eaed;
+            height: 100vh;
+            overflow: hidden;
+        }
+        .layout {
+            display: flex;
+            height: 100vh;
+        }
+        .sidebar {
+            width: 360px;
+            background: #13141f;
+            border-right: 1px solid #1e1f2e;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+        .main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .topbar {
+            height: 60px;
+            background: #13141f;
+            border-bottom: 1px solid #1e1f2e;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 24px;
+            gap: 32px;
+        }
+        .topbar-item {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .topbar-label {
+            font-size: 11px;
+            color: #6b7280;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .topbar-value {
+            font-size: 18px;
+            font-weight: 600;
+        }
+        .content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+        }
+        .input-panel {
+            padding: 20px;
+            background: #1a1b26;
+            border-bottom: 1px solid #1e1f2e;
+        }
+        .panel-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: #6b7280;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 16px;
+        }
+        .tabs {
+            display: flex;
+            gap: 2px;
+            background: #0a0e1a;
+            padding: 4px;
+            border-radius: 8px;
+            margin: 16px 20px;
+        }
+        .tab {
+            flex: 1;
+            padding: 10px 16px;
+            background: transparent;
+            border: none;
+            border-radius: 6px;
+            color: #9ca3af;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .tab.active {
+            background: #1e293b;
+            color: #60a5fa;
+        }
+        .tab-content {
+            display: none;
+            padding: 20px;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            background: #1a1b26;
+            border: 1px solid #1e1f2e;
+            border-radius: 8px;
+            padding: 14px;
+        }
+        .stat-label {
+            font-size: 11px;
+            color: #6b7280;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 6px;
+        }
+        .stat-value {
+            font-size: 22px;
+            font-weight: 700;
+            font-family: 'SF Mono', monospace;
+        }
+        .positive { color: #10b981; }
+        .negative { color: #ef4444; }
+        .neutral { color: #60a5fa; }
+        .card {
+            background: #1a1b26;
+            border: 1px solid #1e1f2e;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .card-header {
+            font-size: 14px;
+            font-weight: 600;
+            color: #9ca3af;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .chart-container {
+            width: 100%;
+            height: 300px;
+            background: #13141f;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            position: relative;
+        }
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .table th {
+            text-align: left;
+            padding: 10px 12px;
+            font-size: 11px;
+            font-weight: 600;
+            color: #6b7280;
+            text-transform: uppercase;
+            border-bottom: 1px solid #1e1f2e;
+        }
+        .table td {
+            padding: 12px;
+            font-size: 13px;
+            border-bottom: 1px solid rgba(30, 31, 46, 0.5);
+        }
+        .badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .badge-call { background: rgba(16, 185, 129, 0.15); color: #10b981; }
+        .badge-put { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
+        .badge-long { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
+        .badge-short { background: rgba(251, 146, 60, 0.15); color: #fb923c; }
+        .signal-box {
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .signal-score {
+            font-size: 48px;
+            font-weight: 700;
+            text-align: center;
+            margin-bottom: 12px;
+        }
+        .signal-label {
+            text-align: center;
+            font-size: 16px;
+            font-weight: 600;
+            color: #9ca3af;
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #10b981;
+            display: inline-block;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .auto-badge {
+            background: rgba(16, 185, 129, 0.15);
+            color: #10b981;
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .form-group {
+            margin-bottom: 14px;
+        }
+        .form-label {
+            display: block;
+            font-size: 11px;
+            color: #6b7280;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 6px;
+        }
+        .form-input {
+            width: 100%;
+            background: #0a0e1a;
+            border: 1px solid #2d3748;
+            border-radius: 6px;
+            padding: 10px 12px;
+            color: #e8eaed;
+            font-size: 14px;
+            font-family: 'SF Mono', Monaco, monospace;
+        }
+        .form-input:focus {
+            outline: none;
+            border-color: #3b82f6;
+        }
+        .btn {
+            width: 100%;
+            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+            border: none;
+            border-radius: 8px;
+            padding: 12px;
+            color: white;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 12px;
+        }
+        .btn:hover {
+            opacity: 0.9;
+        }
+        .btn-secondary {
+            background: #1e293b;
+            color: #94a3b8;
+        }
+        .trade-entry {
+            background: #1a1b26;
+            border: 1px solid #1e1f2e;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 10px;
+            font-size: 12px;
+        }
+        .trade-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+        .trade-details {
+            color: #6b7280;
+            line-height: 1.6;
+        }
+        .input-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 8px;
+        }
+        .metrics-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="layout">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="input-panel">
+                <div class="panel-title">
+                    <span class="status-dot"></span>
+                    LIVE DATA FEED
+                    <span class="auto-badge" style="margin-left: 8px;">AUTO</span>
+                </div>
+                <div id="live-status" style="font-size: 12px; color: #10b981; margin-bottom: 16px;">
+                    🔄 Fetching live data from localhost:8888...
+                </div>
+            </div>
+
+            <div class="tabs">
+                <button class="tab active" onclick="switchTab('gex')">GEX</button>
+                <button class="tab" onclick="switchTab('journal')">Journal</button>
+                <button class="tab" onclick="switchTab('calc')">Calc</button>
+                <button class="tab" onclick="switchTab('signal')">Signal</button>
+            </div>
+
+            <!-- GEX Tab -->
+            <div class="tab-content active" id="tab-gex">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-label">Support</div>
+                        <div class="stat-value positive" id="support">$--</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Resistance</div>
+                        <div class="stat-value negative" id="resistance">$--</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Entry Zone</div>
+                        <div class="stat-value neutral" id="entry-zone">$--</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Stop Loss</div>
+                        <div class="stat-value negative" id="stop-loss">$--</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Journal Tab -->
+            <div class="tab-content" id="tab-journal">
+                <button class="btn" onclick="addTrade()">+ Add Trade</button>
+                <div id="journal-list" style="margin-top: 16px; max-height: 400px; overflow-y: auto;">
+                    <div style="text-align: center; color: #6b7280; padding: 24px; font-size: 12px;">
+                        No trades yet. Click "+ Add Trade" to log your first entry.
+                    </div>
+                </div>
+            </div>
+
+            <!-- Calculator Tab -->
+            <div class="tab-content" id="tab-calc">
+                <div class="form-group">
+                    <label class="form-label">Account Size ($)</label>
+                    <input type="number" class="form-input" id="calc-account" value="10000" onchange="calculateRisk()">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Risk % per Trade</label>
+                    <input type="number" class="form-input" id="calc-risk-pct" value="2" onchange="calculateRisk()">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Entry Price</label>
+                    <input type="number" class="form-input" id="calc-entry" value="73700" onchange="calculateRisk()">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Stop Loss</label>
+                    <input type="number" class="form-input" id="calc-stop" value="72000" onchange="calculateRisk()">
+                </div>
+                <div class="stat-card" style="margin-top: 16px;">
+                    <div class="stat-label">Position Size</div>
+                    <div class="stat-value positive" id="calc-position">--</div>
+                </div>
+                <div class="stat-card" style="margin-top: 12px;">
+                    <div class="stat-label">Max Loss</div>
+                    <div class="stat-value negative" id="calc-loss">--</div>
+                </div>
+            </div>
+
+            <!-- Signal Tab -->
+            <div class="tab-content" id="tab-signal">
+                <div class="signal-box">
+                    <div class="signal-score positive" id="signal-score">+4</div>
+                    <div class="signal-label" id="signal-label">SELECTIVE LONG</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">GEX Component</div>
+                    <div class="stat-value" id="signal-gex">+3</div>
+                </div>
+                <div class="stat-card" style="margin-top: 12px;">
+                    <div class="stat-label">Macro Component</div>
+                    <div class="stat-value" id="signal-macro">+1</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main -->
+        <div class="main">
+            <div class="topbar">
+                <div class="topbar-item">
+                    <div class="topbar-label">BTC Spot</div>
+                    <div class="topbar-value positive" id="top-btc">$--</div>
+                </div>
+                <div class="topbar-item">
+                    <div class="topbar-label">Net GEX</div>
+                    <div class="topbar-value" id="top-gex">$--</div>
+                </div>
+                <div class="topbar-item">
+                    <div class="topbar-label">Funding</div>
+                    <div class="topbar-value" id="top-funding">--%</div>
+                </div>
+                <div class="topbar-item">
+                    <div class="topbar-label">Last Update</div>
+                    <div class="topbar-value" id="top-time" style="font-size: 14px;">--:--:--</div>
+                </div>
+                <div class="topbar-item">
+                    <div class="topbar-label">Next Refresh</div>
+                    <div class="topbar-value" id="top-next" style="font-size: 14px;">--:--</div>
+                </div>
+            </div>
+
+            <div class="content">
+                <div class="card">
+                    <div class="card-header">
+                        <span>📊 GEX Distribution</span>
+                    </div>
+                    <div class="chart-container">
+                        <svg id="gex-chart" width="100%" height="100%"></svg>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <span>🎯 Key Strikes & OI</span>
+                    </div>
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Strike</th>
+                                <th>Type</th>
+                                <th>IV</th>
+                                <th>OI</th>
+                                <th>GEX Impact</th>
+                            </tr>
+                        </thead>
+                        <tbody id="strikes-table">
+                            <tr><td colspan="5" style="text-align: center; color: #6b7280; padding: 24px;">Loading live data...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">📝 Manager Notes</div>
+                    <div style="font-size: 13px; line-height: 1.8; color: #9ca3af;">
+                        <p id="manager-note" style="margin-bottom: 12px;">
+                            Analyzing live market data from Deribit and Binance...
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:8888/api/data';
+        const UPDATE_INTERVAL = 5 * 60 * 1000;
+        let currentData = null;
+        let trades = JSON.parse(localStorage.getItem('gdive_trades') || '[]');
+
+        function switchTab(tab) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            
+            event.target.classList.add('active');
+            document.getElementById('tab-' + tab).classList.add('active');
+        }
+
+        async function fetchData() {
+            try {
+                const response = await fetch(API_URL);
+                if (!response.ok) throw new Error('Server error');
+                
+                const result = await response.json();
+                
+                if (!result.success) {
+                    document.getElementById('live-status').innerHTML = '❌ No data available';
+                    return;
+                }
+
+                currentData = result.data;
+                updateDashboard(result.data);
+                document.getElementById('live-status').innerHTML = '✅ Connected - Auto-updating';
+                
+            } catch (error) {
+                console.error('Fetch error:', error);
+                document.getElementById('live-status').innerHTML = '⚠️ Server offline - Start gdive_server.py';
+            }
+        }
+
+        function updateDashboard(data) {
+            // Topbar
+            document.getElementById('top-btc').textContent = `$${data.btc_price.toLocaleString()}`;
+            document.getElementById('top-gex').textContent = `$${data.net_gex.toFixed(1)}M`;
+            document.getElementById('top-gex').className = 'topbar-value ' + (data.net_gex > 0 ? 'positive' : 'negative');
+            document.getElementById('top-funding').textContent = `${data.funding_rate.toFixed(4)}%`;
+            
+            const updateTime = new Date(data.timestamp);
+            document.getElementById('top-time').textContent = updateTime.toLocaleTimeString();
+
+            // Support/Resistance
+            if (data.strikes.length > 0) {
+                const strikes = data.strikes.map(s => s.strike).sort((a, b) => b - a);
+                const support = Math.min(...strikes);
+                const resistance = Math.max(...strikes);
+                const entry = data.btc_price;
+                const stop = support * 0.98;
+                
+                document.getElementById('support').textContent = `$${support.toLocaleString()}`;
+                document.getElementById('resistance').textContent = `$${resistance.toLocaleString()}`;
+                document.getElementById('entry-zone').textContent = `$${entry.toLocaleString()}`;
+                document.getElementById('stop-loss').textContent = `$${Math.round(stop).toLocaleString()}`;
+            }
+
+            // Strikes table
+            const tbody = document.getElementById('strikes-table');
+            tbody.innerHTML = '';
+            
+            data.strikes.forEach(strike => {
+                const row = tbody.insertRow();
+                const impact = strike.type === 'call' ? '+ Pin' : '- Support';
+                row.innerHTML = `
+                    <td style="font-weight: 600;">$${strike.strike.toLocaleString()}</td>
+                    <td><span class="badge badge-${strike.type}">${strike.type.toUpperCase()}</span></td>
+                    <td>${strike.iv.toFixed(1)}%</td>
+                    <td>${strike.oi.toFixed(2)}K</td>
+                    <td class="${strike.type === 'call' ? 'positive' : 'negative'}">${impact}</td>
+                `;
+            });
+
+            // Manager note
+            const gexNote = data.net_gex > 0 
+                ? 'Positive GEX → Dealers long gamma. Expect reduced volatility and pinning around $' + data.btc_price.toLocaleString() + '.'
+                : 'Negative GEX → Dealers short gamma. Volatility may amplify breakouts. Watch key strikes closely.';
+            
+            const fundingNote = data.funding_rate > 0.01 
+                ? 'Elevated funding suggests overheated longs.' 
+                : 'Neutral funding - balanced perpetual positioning.';
+            
+            document.getElementById('manager-note').innerHTML = `
+                <strong>Market Structure:</strong> ${gexNote}<br>
+                <strong>Perpetual Markets:</strong> ${fundingNote}<br>
+                <strong>Recommendation:</strong> ${data.net_gex < 0 ? 'Reduce size on breakout trades, volatility risk elevated.' : 'Range trading favored, consider selling premium.'}
+            `;
+
+            // Draw GEX chart
+            drawGEXChart(data);
+        }
+
+        function drawGEXChart(data) {
+            const svg = document.getElementById('gex-chart');
+            const width = svg.clientWidth;
+            const height = svg.clientHeight;
+            
+            svg.innerHTML = '';
+            
+            const strikes = data.strikes.map(s => s.strike).sort((a, b) => a - b);
+            const barWidth = width / strikes.length;
+            const maxOI = Math.max(...data.strikes.map(s => s.oi));
+            
+            data.strikes.forEach((strike, i) => {
+                const barHeight = (strike.oi / maxOI) * (height - 40);
+                const x = i * barWidth;
+                const y = height - barHeight - 20;
+                
+                const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                rect.setAttribute('x', x + barWidth * 0.1);
+                rect.setAttribute('y', y);
+                rect.setAttribute('width', barWidth * 0.8);
+                rect.setAttribute('height', barHeight);
+                rect.setAttribute('fill', strike.type === 'call' ? '#10b981' : '#ef4444');
+                rect.setAttribute('opacity', '0.7');
+                svg.appendChild(rect);
+                
+                const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                text.setAttribute('x', x + barWidth / 2);
+                text.setAttribute('y', height - 5);
+                text.setAttribute('text-anchor', 'middle');
+                text.setAttribute('fill', '#6b7280');
+                text.setAttribute('font-size', '10');
+                text.textContent = `$${(strike.strike / 1000).toFixed(0)}K`;
+                svg.appendChild(text);
+            });
+            
+            const btcLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            btcLine.setAttribute('x1', 0);
+            btcLine.setAttribute('y1', height / 2);
+            btcLine.setAttribute('x2', width);
+            btcLine.setAttribute('y2', height / 2);
+            btcLine.setAttribute('stroke', '#60a5fa');
+            btcLine.setAttribute('stroke-width', '2');
+            btcLine.setAttribute('stroke-dasharray', '5,5');
+            svg.appendChild(btcLine);
+        }
+
+        function calculateRisk() {
+            const account = parseFloat(document.getElementById('calc-account').value) || 0;
+            const riskPct = parseFloat(document.getElementById('calc-risk-pct').value) || 0;
+            const entry = parseFloat(document.getElementById('calc-entry').value) || 0;
+            const stop = parseFloat(document.getElementById('calc-stop').value) || 0;
+            
+            const riskAmount = account * (riskPct / 100);
+            const riskPerUnit = Math.abs(entry - stop);
+            const positionSize = riskPerUnit > 0 ? (riskAmount / riskPerUnit).toFixed(4) : 0;
+            
+            document.getElementById('calc-position').textContent = `${positionSize} BTC`;
+            document.getElementById('calc-loss').textContent = `$${riskAmount.toFixed(2)}`;
+        }
+
+        function addTrade() {
+            const direction = prompt('Direction (long/short):') || 'long';
+            const entry = parseFloat(prompt('Entry Price:')) || (currentData ? currentData.btc_price : 73700);
+            const size = parseFloat(prompt('Size (BTC):')) || 0.1;
+            const notes = prompt('Notes:') || '';
+            
+            const trade = {
+                id: Date.now(),
+                direction,
+                entry,
+                size,
+                notes,
+                timestamp: new Date().toISOString()
+            };
+            
+            trades.unshift(trade);
+            localStorage.setItem('gdive_trades', JSON.stringify(trades));
+            renderJournal();
+        }
+
+        function renderJournal() {
+            const container = document.getElementById('journal-list');
+            if (trades.length === 0) {
+                container.innerHTML = '<div style="text-align: center; color: #6b7280; padding: 24px; font-size: 12px;">No trades yet.</div>';
+                return;
+            }
+            
+            container.innerHTML = trades.map(t => `
+                <div class="trade-entry">
+                    <div class="trade-header">
+                        <span class="badge badge-${t.direction}">${t.direction.toUpperCase()}</span>
+                        <span>$${t.entry.toLocaleString()}</span>
+                    </div>
+                    <div class="trade-details">
+                        Size: ${t.size} BTC<br>
+                        ${t.notes ? 'Notes: ' + t.notes + '<br>' : ''}
+                        ${new Date(t.timestamp).toLocaleString()}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        setInterval(() => {
+            const nextFetch = Math.floor((UPDATE_INTERVAL - (Date.now() % UPDATE_INTERVAL)) / 1000);
+            const mins = Math.floor(nextFetch / 60);
+            const secs = nextFetch % 60;
+            document.getElementById('top-next').textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
+        }, 1000);
+
+        fetchData();
+        setInterval(fetchData, UPDATE_INTERVAL);
+        renderJournal();
+        calculateRisk();
+    </script>
+</body>
+</html>

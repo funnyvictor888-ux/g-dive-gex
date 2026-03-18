@@ -157,6 +157,49 @@ def calc_gex(spot, summaries):
     return result
 
 # ── Ana veri paketi ────────────────────────────────────────────────
+def build_menthorq_state(spot, summaries):
+    total_call_oi=0.0; total_put_oi=0.0
+    weighted_bias=0.0; weighted_count=0.0
+    call_wall=None; put_wall=None
+    max_call_oi=-1.0; max_put_oi=-1.0
+    for s in summaries:
+        name=s.get("instrument_name",""); parts=name.split("-")
+        if len(parts)<4: continue
+        try: strike=float(parts[2])
+        except: continue
+        opt_type=parts[3]; oi=float(s.get("open_interest",0) or 0)
+        if oi<=0: continue
+        moneyness=(strike-spot)/spot
+        weight=1.0/(1.0+abs(moneyness)*60.0)
+        if opt_type=="C":
+            total_call_oi+=oi
+            if oi>max_call_oi: max_call_oi=oi; call_wall=strike
+            weighted_bias+=weight*oi if strike>=spot else 0.25*weight*oi
+        else:
+            total_put_oi+=oi
+            if oi>max_put_oi: max_put_oi=oi; put_wall=strike
+            weighted_bias-=weight*oi if strike<=spot else 0.25*weight*oi
+        weighted_count+=weight*oi
+    total_oi=total_call_oi+total_put_oi
+    if total_oi<=0: return {"gamma_z":0.0,"dealer_bias":0.0,"flow_score":0.0,"score":0.0,"scalar":1.0,"regime":"neutral","call_wall":call_wall,"put_wall":put_wall,"pc_ratio":1.0}
+    dealer_bias=(total_call_oi-total_put_oi)/total_oi
+    wall_conc=0.0
+    if max_call_oi>0: wall_conc+=max_call_oi/total_oi
+    if max_put_oi>0: wall_conc+=max_put_oi/total_oi
+    gamma_z=max(-2.0,min(2.0,(wall_conc-0.15)/0.10))
+    flow_score=max(-2.0,min(2.0,weighted_bias/weighted_count if weighted_count else 0))
+    dealer_bias=max(-2.0,min(2.0,dealer_bias*2.0))
+    score=0.5*gamma_z+0.3*dealer_bias+0.2*flow_score
+    if score<=-1.0: scalar,regime=0.85,"stress"
+    elif score<=-0.6: scalar,regime=0.95,"cautious"
+    elif score<=-0.2: scalar,regime=0.97,"soft_risk_off"
+    elif score<0.2: scalar,regime=1.00,"neutral"
+    elif score<0.6: scalar,regime=1.02,"firm"
+    elif score<0.9: scalar,regime=1.04,"positive"
+    elif score<1.2: scalar,regime=1.06,"strong_squeeze"
+    else: scalar,regime=1.08,"extreme_squeeze"
+    return {"gamma_z":round(gamma_z,4),"dealer_bias":round(dealer_bias,4),"flow_score":round(flow_score,4),"score":round(score,4),"scalar":round(scalar,4),"regime":regime,"call_wall":call_wall,"put_wall":put_wall,"pc_ratio":round(total_put_oi/total_call_oi,3) if total_call_oi>0 else 1.0}
+
 def build_data():
     print("[INFO] Fetching Deribit data...")
     t0 = time.time()
@@ -173,6 +216,8 @@ def build_data():
 
     print(f"[INFO] Spot: {spot:.0f}, Options: {len(summaries)}")
 
+    mq = build_menthorq_state(spot, summaries)
+    mq = build_menthorq_state(spot, summaries)
     gex_nodes = calc_gex(spot, summaries)
     total_net_gex = round(sum(n["net_gex"] for n in gex_nodes), 2)
     pos_nodes = sorted([n for n in gex_nodes if n["net_gex"] > 0], key=lambda x: -x["net_gex"])[:6]
@@ -261,6 +306,12 @@ def build_data():
         "pos_gex_nodes": pos_nodes,
         "neg_gex_nodes": neg_nodes,
         "n_contracts": len(summaries),
+        "menthorq": {"gamma_z":mq["gamma_z"],"dealer_bias":mq["dealer_bias"],"flow_score":mq["flow_score"],"scalar":mq["scalar"],"regime":mq["regime"],"score":mq["score"],"wall_adj":0.0},
+        "funding": {"score":0,"scalar":1.0,"regime":"neutral"},
+        "layer_budget": {"final_scalar":round(mq["scalar"],4),"menthorq_scalar":mq["scalar"],"funding_scalar":1.0},
+        "menthorq": {"gamma_z":mq["gamma_z"],"dealer_bias":mq["dealer_bias"],"flow_score":mq["flow_score"],"scalar":mq["scalar"],"regime":mq["regime"],"score":mq["score"],"wall_adj":0.0},
+        "funding": {"score":0,"scalar":1.0,"regime":"neutral"},
+        "layer_budget": {"final_scalar":round(mq["scalar"],4),"menthorq_scalar":mq["scalar"],"funding_scalar":1.0},
         "_source": "deribit_live",
         "_elapsed": elapsed,
     }

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 
 const SERVER_URL = window.location.hostname === "localhost" ? "http://localhost:7432" : "https://web-production-909e6.up.railway.app";
+function calcPositionSize(capital,riskPct,entry,stop,finalScalar){const baseRisk=capital*riskPct*2;const scaledRisk=baseRisk*(finalScalar||1.0);return +(scaledRisk/Math.abs(entry-stop)).toFixed(4);}
 const T = { bg:"#0d1117",card:"#161b22",card2:"#1c2128",border:"#30363d",text:"#e6edf3",muted:"#7d8590",green:"#3fb950",red:"#f85149",orange:"#f78166",gold:"#e3b341",blue:"#79c0ff",purple:"#bc8cff" };
 
 const RISK_CONFIG = {
@@ -504,7 +505,7 @@ export default function App(){
       if(!hasOpen&&confOK&&ivOK){
         if(bullish){
           const entry=spot,stop=data.put_support,tp=data.call_resistance;
-          const size=+(400/Math.abs(entry-stop)).toFixed(4); // 2x leverage
+          const finalScalar=data.layer_budget&&data.layer_budget.final_scalar||1.0;const size=calcPositionSize(10000,0.02,entry,stop,finalScalar); // 2x leverage
           const trade={id:Date.now(),date:new Date().toISOString().slice(0,16).replace("T"," "),dir:"LONG",entry,stop,tp,size,regime:data.regime,signal:"Auto·L·Konf"+confScore.score,notes:"Auto LONG. GEX:"+data.total_net_gex+"M IV:"+data.front_iv+"%",status:"OPEN",pnl:null,rr:null,exitPrice:null,exitDate:null,partialClosed:false};
           localStorage.setItem(JKEY,JSON.stringify([trade,...updated]));
           alert("AUTO LONG @ $"+entry+" Stop:$"+stop+" TP:$"+tp);
@@ -557,6 +558,34 @@ export default function App(){
           </div>
         </div>
         <TeknikSignal optData={d} onConfluence={setConfScore}/>
+        {d.menthorq&&(<Card bc={d.menthorq.scalar>=1.04?T.green:d.menthorq.scalar<=0.96?T.red:T.gold}>
+          <ST>MenthorQ Institutional Layer</ST>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:10}}>
+            {[{label:"Gamma Z",value:d.menthorq.gamma_z?.toFixed(3),color:d.menthorq.gamma_z>0.5?T.green:d.menthorq.gamma_z<-0.5?T.red:T.gold},{label:"Dealer Bias",value:d.menthorq.dealer_bias?.toFixed(3),color:d.menthorq.dealer_bias>0.2?T.green:d.menthorq.dealer_bias<-0.2?T.red:T.muted},{label:"Flow Score",value:d.menthorq.flow_score?.toFixed(3),color:d.menthorq.flow_score>0.2?T.green:d.menthorq.flow_score<-0.2?T.red:T.muted},{label:"MQ Score",value:d.menthorq.score?.toFixed(3),color:d.menthorq.score>0.2?T.green:d.menthorq.score<-0.2?T.red:T.gold}].map((s,i)=>(
+              <div key={i} style={{padding:"10px 12px",background:T.card2,border:"1px solid "+T.border,borderRadius:6}}>
+                <div style={{color:T.muted,fontSize:9.5,textTransform:"uppercase",marginBottom:3}}>{s.label}</div>
+                <div style={{color:s.color,fontWeight:900,fontSize:20,fontFamily:"monospace"}}>{s.value}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10}}>
+            <div style={{padding:"10px 12px",background:d.menthorq.scalar>=1.04?"#0d2c12":"#2c0a08",border:"1px solid "+(d.menthorq.scalar>=1.04?T.green:T.red),borderRadius:6}}>
+              <div style={{color:T.muted,fontSize:9.5,textTransform:"uppercase",marginBottom:3}}>MQ Scalar</div>
+              <div style={{color:d.menthorq.scalar>=1.04?T.green:d.menthorq.scalar<=0.96?T.red:T.gold,fontWeight:900,fontSize:24,fontFamily:"monospace"}}>{d.menthorq.scalar?.toFixed(3)}x</div>
+              <div style={{color:T.muted,fontSize:10,textTransform:"uppercase",marginTop:3}}>{d.menthorq.regime}</div>
+            </div>
+            <div style={{padding:"10px 12px",background:T.card2,border:"1px solid "+T.border,borderRadius:6}}>
+              <div style={{color:T.muted,fontSize:9.5,textTransform:"uppercase",marginBottom:3}}>Funding Scalar</div>
+              <div style={{color:d.funding?.scalar>=1?T.green:T.orange,fontWeight:900,fontSize:24,fontFamily:"monospace"}}>{d.funding?.scalar?.toFixed(3)}x</div>
+              <div style={{color:T.muted,fontSize:10,textTransform:"uppercase",marginTop:3}}>{d.funding?.regime}</div>
+            </div>
+            <div style={{padding:"10px 12px",background:T.card2,border:"1px solid "+T.border,borderRadius:6}}>
+              <div style={{color:T.muted,fontSize:9.5,textTransform:"uppercase",marginBottom:3}}>Final Scalar</div>
+              <div style={{color:d.layer_budget?.final_scalar>=1.02?T.green:d.layer_budget?.final_scalar<=0.97?T.red:T.gold,fontWeight:900,fontSize:24,fontFamily:"monospace"}}>{d.layer_budget?.final_scalar?.toFixed(3)}x</div>
+              <div style={{color:T.muted,fontSize:10,marginTop:3}}>Pozisyon carpani</div>
+            </div>
+          </div>
+        </Card>)}
         <div style={{display:"grid",gridTemplateColumns:"300px 1fr",gap:14,alignItems:"start"}}>
           <Card>
             <ST>Key Levels</ST>

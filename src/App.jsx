@@ -661,6 +661,24 @@ export default function App(){
             </div>
           </Card>
         </div>
+        {d.multi_asset&&d.multi_asset.weights&&(
+          <Card bc={T.purple}>
+            <ST>Multi-Asset Trend Weights — BTC · GLD · TLT</ST>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
+              {[
+                {label:"BTC Weight",value:((d.multi_asset.weights.BTC||0)*100).toFixed(1)+"%",color:d.multi_asset.weights.BTC>0?T.green:T.red},
+                {label:"GLD Weight",value:((d.multi_asset.weights.GLD||0)*100).toFixed(1)+"%",color:d.multi_asset.weights.GLD>0?T.gold:T.muted},
+                {label:"TLT Weight",value:((d.multi_asset.weights.TLT||0)*100).toFixed(1)+"%",color:d.multi_asset.weights.TLT>0?T.blue:T.muted},
+                {label:"Realized Vol",value:((d.multi_asset.realized_vol||0)*100).toFixed(1)+"%",color:d.multi_asset.realized_vol>0.6?T.red:T.green},
+              ].map((s,i)=>(
+                <div key={i} style={{padding:"10px 12px",background:T.card2,border:"1px solid "+T.border,borderRadius:6}}>
+                  <div style={{color:T.muted,fontSize:9.5,textTransform:"uppercase",marginBottom:3}}>{s.label}</div>
+                  <div style={{color:s.color,fontWeight:900,fontSize:20,fontFamily:"monospace"}}>{s.value}</div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
         {riskStatus&&(
           <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
             {[

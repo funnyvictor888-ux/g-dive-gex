@@ -200,6 +200,96 @@ def build_menthorq_state(spot, summaries):
     else: scalar,regime=1.08,"extreme_squeeze"
     return {"gamma_z":round(gamma_z,4),"dealer_bias":round(dealer_bias,4),"flow_score":round(flow_score,4),"score":round(score,4),"scalar":round(scalar,4),"regime":regime,"call_wall":call_wall,"put_wall":put_wall,"pc_ratio":round(total_put_oi/total_call_oi,3) if total_call_oi>0 else 1.0}
 
+
+import csv
+from pathlib import Path
+from datetime import datetime
+STATE_LOG = Path("state_history.csv")
+
+def fetch_asset_price(symbol):
+    try:
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/"+symbol+"?interval=1d&range=90d"
+        from urllib.request import urlopen, Request
+        req = Request(url, headers={"User-Agent":"gdive/4.0"})
+        with urlopen(req, timeout=10) as r:
+            import json
+            d = json.loads(r.read())
+            closes = d["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+            return [x for x in closes if x is not None]
+    except Exception as e:
+        print("[ERR] asset/"+symbol+": "+str(e))
+        return None
+
+def fetch_multi_asset():
+    assets = {}
+    for sym,key in [("BTC-USD","BTC"),("GLD","GLD"),("TLT","TLT")]:
+        p = fetch_asset_price(sym)
+        if p and len(p)>=20: assets[key]=p
+    return assets
+
+def trend_signal(series, fast_n, slow_n):
+    if len(series)<slow_n: return 0.0
+    fast=sum(series[-fast_n:])/fast_n; slow=sum(series[-slow_n:])/slow_n
+    if slow==0: return 0.0
+    spread=(fast-slow)/slow; trend=max(min(spread*8.0,1.0),-1.0)
+    if abs(spread)<0.015: trend*=0.25
+    return float(trend)
+
+def compute_multi_asset_signals(assets, menthorq_scalar=1.0):
+    weights={}
+    for key,prices in assets.items():
+        fn,sn=(15,40) if key=="BTC" else (20,50)
+        weights[key]=trend_signal(prices,fn,sn)
+    gross=sum(abs(v) for v in weights.values())
+    if gross==0: return {"BTC":0.0,"GLD":0.0,"TLT":0.0}
+    weights={k:v/gross for k,v in weights.items()}
+    if "BTC" in weights:
+        weights["BTC"]*=menthorq_scalar
+        gross2=sum(abs(v) for v in weights.values())
+        if gross2>0: weights={k:v/gross2 for k,v in weights.items()}
+    return {k:round(float(v),4) for k,v in weights.items()}
+
+def realized_vol(prices, window=20):
+    import math
+    if len(prices)<window+1: return 0.25
+    rets=[math.log(prices[i]/prices[i-1]) for i in range(-window,0)]
+    mean=sum(rets)/len(rets)
+    variance=sum((r-mean)**2 for r in rets)/len(rets)
+    return math.sqrt(variance*252)
+
+def dynamic_vol_target(weights, realized, target_vol=0.20, posture="RISK_ON"):
+    mults={"RISK_ON":1.0,"RISK_NEUTRAL":0.75,"RISK_OFF":0.5}
+    mult=mults.get(posture,1.0)
+    if realized<=0: return weights
+    scale=min((target_vol/realized)*mult,1.5)
+    return {k:round(v*scale,4) for k,v in weights.items()}
+
+def apply_execution_costs(weights, prev_weights, fee=0.0002):
+    return {k:round(float(v)-abs(float(v)-float(prev_weights.get(k,0)))*fee,4) for k,v in weights.items()}
+
+def append_state_log(data):
+    header=["timestamp","spot","gamma_z","dealer_bias","flow_score","score","scalar","final_scalar","btc_weight","gld_weight","tlt_weight","regime","menthorq_regime"]
+    write_header=not STATE_LOG.exists()
+    try:
+        with open(STATE_LOG,"a",newline="") as f:
+            w=csv.writer(f)
+            if write_header: w.writerow(header)
+            mq=data.get("menthorq",{}); lb=data.get("layer_budget",{}); ma=data.get("multi_asset",{}).get("weights",{})
+            w.writerow([datetime.utcnow().isoformat(),data.get("spot"),mq.get("gamma_z"),mq.get("dealer_bias"),mq.get("flow_score"),mq.get("score"),mq.get("scalar"),lb.get("final_scalar"),ma.get("BTC"),ma.get("GLD"),ma.get("TLT"),data.get("regime"),mq.get("regime")])
+    except Exception as e: print("[ERR] log:",e)
+
+def read_state_log(n=200):
+    if not STATE_LOG.exists(): return []
+    rows=[]
+    try:
+        with open(STATE_LOG,"r") as f:
+            reader=csv.DictReader(f)
+            for row in reader: rows.append(row)
+    except: pass
+    return rows[-n:]
+
+_prev_weights_ma = {}
+
 def build_data():
     print("[INFO] Fetching Deribit data...")
     t0 = time.time()
@@ -215,6 +305,14 @@ def build_data():
         return None
 
     print(f"[INFO] Spot: {spot:.0f}, Options: {len(summaries)}")
+    # Multi-asset data
+    assets = fetch_multi_asset()
+    ma_weights = compute_multi_asset_signals(assets, 1.0)
+    btc_prices = assets.get("BTC",[])
+    rvol = realized_vol(btc_prices) if btc_prices else 0.25
+    posture = "RISK_ON" if True else "RISK_OFF"
+    ma_weights = dynamic_vol_target(ma_weights, rvol, 0.20, posture)
+    ma_weights = apply_execution_costs(ma_weights, _prev_weights_ma)
 
     mq = build_menthorq_state(spot, summaries)
     mq = build_menthorq_state(spot, summaries)
@@ -312,6 +410,7 @@ def build_data():
         "menthorq": {"gamma_z":mq["gamma_z"],"dealer_bias":mq["dealer_bias"],"flow_score":mq["flow_score"],"scalar":mq["scalar"],"regime":mq["regime"],"score":mq["score"],"wall_adj":0.0},
         "funding": {"score":0,"scalar":1.0,"regime":"neutral"},
         "layer_budget": {"final_scalar":round(mq["scalar"],4),"menthorq_scalar":mq["scalar"],"funding_scalar":1.0},
+        "multi_asset": {"weights": ma_weights, "realized_vol": round(rvol,4), "posture": posture, "vol_target": 0.20},
         "_source": "deribit_live",
         "_elapsed": elapsed,
     }
@@ -366,6 +465,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, d)
             else:
                 self.send_json(503, {"error": "refresh failed"})
+        elif self.path=="/history":
+            self.send_json(200, read_state_log(200))
+        elif self.path=="/attribution":
+            rows=read_state_log(500)
+            scalars=[float(r.get("scalar",1)) for r in rows if r.get("scalar")]
+            report={"rows":len(rows),"avg_scalar":round(sum(scalars)/len(scalars),4) if scalars else None}
+            self.send_json(200, report)
         else:
             self.send_json(404, {"error": "not found"})
 

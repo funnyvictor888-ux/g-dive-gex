@@ -380,14 +380,14 @@ export default function App(){
 
   // Auto-trade: koşullar sağlanınca journal'a otomatik kaydet
   useEffect(()=>{
-    if(!data||data._source==="demo")return;
+    if(!data||data.spot<1000)return;
     const regime=data.regime;
     const bullish=["IDEAL_LONG","BULLISH_HIGH_VOL"].includes(regime);
     const aboveHVL=data.spot>data.hvl;
     const gexPos=data.total_net_gex>0;
     if(!bullish||!aboveHVL||!gexPos)return;
-      const confOK=confScore&&confScore.score>=2;
-      const ivOK=(data.iv_rank||0)<75;
+      const confOK=!confScore||(confScore&&confScore.score>=-10);
+      const ivOK=(data.iv_rank||0)<80;
       if(!confOK||!ivOK)return;
     // Bugün zaten trade var mı?
     try{
@@ -420,7 +420,7 @@ export default function App(){
   useEffect(()=>{fetchOHLCV("4h",500).then(candles=>{if(candles){const r=runBacktest(candles);setBtResult(r);}});},[]);
 
   useEffect(()=>{
-    if(!data||data._source==="demo")return;
+    if(!data||data.spot<1000)return;
     try{
       const JKEY="gdive:journal:v2";
       const trades=JSON.parse(localStorage.getItem(JKEY)||"[]");

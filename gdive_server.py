@@ -415,6 +415,114 @@ def build_data():
         "_elapsed": elapsed,
     }
 
+
+# ── Server-Side Trade Management ──────────────────────────────────
+TRADES_FILE = Path("trades.json")
+
+def load_trades():
+    if not TRADES_FILE.exists(): return []
+    try: return json.loads(TRADES_FILE.read_text())
+    except: return []
+
+def save_trades(trades):
+    TRADES_FILE.write_text(json.dumps(trades, indent=2))
+
+def check_and_manage_trades(data):
+    if not data or data.get("_source") != "deribit_live": return
+    trades = load_trades()
+    if not trades: return
+    spot = data["spot"]
+    regime = data["regime"]
+    gex = data["total_net_gex"]
+    hvl = data["hvl"]
+    bullish = regime in ("IDEAL_LONG","BULLISH_HIGH_VOL") and spot > hvl and gex > 0
+    bearish = regime in ("BEARISH_VOLATILE","BEARISH_LOW_VOL","HIGH_RISK") and spot < hvl and gex < 0
+    changed = False
+    updated = []
+    for t in trades:
+        if t["status"] != "OPEN":
+            updated.append(t)
+            continue
+        from datetime import datetime
+        now = datetime.utcnow().isoformat()[:16].replace("T"," ")
+        if t["dir"] == "LONG":
+            if spot <= t["stop"]:
+                pnl = round((t["stop"]-t["entry"])*t["size"], 2)
+                rr = -1.0
+                t.update({"status":"CLOSED","exitPrice":t["stop"],"exitDate":now,"pnl":pnl,"rr":rr,"notes":(t.get("notes",""))+" | STOP"})
+                print(f"[TRADE] STOP HIT LONG @ {t['stop']} PnL:{pnl}")
+                changed = True
+            elif bearish:
+                pnl = round((spot-t["entry"])*t["size"], 2)
+                rr = round((spot-t["entry"])/(t["entry"]-t["stop"]),2) if t["entry"]!=t["stop"] else 0
+                t.update({"status":"CLOSED","exitPrice":spot,"exitDate":now,"pnl":pnl,"rr":rr,"notes":(t.get("notes",""))+" | Rejim SHORT"})
+                print(f"[TRADE] REGIME EXIT LONG @ {spot} PnL:{pnl}")
+                changed = True
+            elif spot >= t["tp"] and not t.get("partialClosed"):
+                half = round(t["size"]/2, 4)
+                halfPnl = round((t["tp"]-t["entry"])*half, 2)
+                if bullish:
+                    call_walls = data.get("call_walls",[])
+                    nextTP = next((w for w in sorted(call_walls) if w > t["tp"]), t["tp"]*1.03)
+                    t.update({"size":half,"partialClosed":True,"partialPnl":halfPnl,"tp":nextTP,"notes":(t.get("notes",""))+f" | %50 @ {t['tp']}"})
+                    print(f"[TRADE] TP50 LONG @ {t['tp']} PnL:{halfPnl} nextTP:{nextTP}")
+                else:
+                    pnl = round((t["tp"]-t["entry"])*t["size"], 2)
+                    rr = round((t["tp"]-t["entry"])/(t["entry"]-t["stop"]),2) if t["entry"]!=t["stop"] else 0
+                    t.update({"status":"CLOSED","exitPrice":t["tp"],"exitDate":now,"pnl":pnl,"rr":rr,"notes":(t.get("notes",""))+" | TP"})
+                    print(f"[TRADE] TP100 LONG @ {t['tp']} PnL:{pnl}")
+                changed = True
+        elif t["dir"] == "SHORT":
+            if spot >= t["stop"]:
+                pnl = round((t["entry"]-t["stop"])*t["size"], 2)
+                t.update({"status":"CLOSED","exitPrice":t["stop"],"exitDate":now,"pnl":pnl,"rr":-1.0,"notes":(t.get("notes",""))+" | STOP"})
+                print(f"[TRADE] STOP HIT SHORT @ {t['stop']} PnL:{pnl}")
+                changed = True
+            elif bullish:
+                pnl = round((t["entry"]-spot)*t["size"], 2)
+                rr = round((t["entry"]-spot)/(t["stop"]-t["entry"]),2) if t["entry"]!=t["stop"] else 0
+                t.update({"status":"CLOSED","exitPrice":spot,"exitDate":now,"pnl":pnl,"rr":rr,"notes":(t.get("notes",""))+" | Rejim LONG"})
+                print(f"[TRADE] REGIME EXIT SHORT @ {spot} PnL:{pnl}")
+                changed = True
+            elif spot <= t["tp"] and not t.get("partialClosed"):
+                half = round(t["size"]/2, 4)
+                halfPnl = round((t["entry"]-t["tp"])*half, 2)
+                if bearish:
+                    put_walls = data.get("put_walls",[])
+                    nextTP = next((w for w in sorted(put_walls,reverse=True) if w < t["tp"]), t["tp"]*0.97)
+                    t.update({"size":half,"partialClosed":True,"partialPnl":halfPnl,"tp":nextTP,"notes":(t.get("notes",""))+f" | %50 @ {t['tp']}"})
+                    print(f"[TRADE] TP50 SHORT @ {t['tp']} PnL:{halfPnl} nextTP:{nextTP}")
+                else:
+                    pnl = round((t["entry"]-t["tp"])*t["size"], 2)
+                    rr = round((t["entry"]-t["tp"])/(t["stop"]-t["entry"]),2) if t["entry"]!=t["stop"] else 0
+                    t.update({"status":"CLOSED","exitPrice":t["tp"],"exitDate":now,"pnl":pnl,"rr":rr,"notes":(t.get("notes",""))+" | TP"})
+                    print(f"[TRADE] TP100 SHORT @ {t['tp']} PnL:{pnl}")
+                changed = True
+        updated.append(t)
+    if changed:
+        save_trades(updated)
+    # Auto entry
+    today = __import__("datetime").date.today().isoformat()
+    has_open = any(t["status"]=="OPEN" and t.get("date","").startswith(today) for t in updated)
+    if not has_open:
+        final_scalar = data.get("layer_budget",{}).get("final_scalar",1.0)
+        risk = 10000 * 0.02 * 2 * final_scalar
+        if bullish:
+            entry=spot; stop=data["put_support"]; tp=data["call_resistance"]
+            size=round(risk/abs(entry-stop),4) if entry!=stop else 0.001
+            trade={"id":int(time.time()*1000),"date":__import__("datetime").datetime.utcnow().isoformat()[:16].replace("T"," "),"dir":"LONG","entry":entry,"stop":stop,"tp":tp,"size":size,"regime":regime,"signal":"Server·Auto·LONG·scalar"+str(final_scalar),"notes":f"Auto LONG. GEX:{gex}M scalar:{final_scalar}","status":"OPEN","pnl":None,"rr":None,"exitPrice":None,"exitDate":None,"partialClosed":False}
+            updated.append(trade)
+            save_trades(updated)
+            print(f"[TRADE] AUTO LONG @ {entry} stop:{stop} tp:{tp} size:{size}")
+        elif bearish:
+            entry=spot; stop=data["call_resistance"]; tp=data["put_support"]
+            size=round(risk/abs(entry-stop),4) if entry!=stop else 0.001
+            trade={"id":int(time.time()*1000),"date":__import__("datetime").datetime.utcnow().isoformat()[:16].replace("T"," "),"dir":"SHORT","entry":entry,"stop":stop,"tp":tp,"size":size,"regime":regime,"signal":"Server·Auto·SHORT·scalar"+str(final_scalar),"notes":f"Auto SHORT. GEX:{gex}M scalar:{final_scalar}","status":"OPEN","pnl":None,"rr":None,"exitPrice":None,"exitDate":None,"partialClosed":False}
+            updated.append(trade)
+            save_trades(updated)
+            print(f"[TRADE] AUTO SHORT @ {entry} stop:{stop} tp:{tp} size:{size}")
+
+
 # ── Cache ──────────────────────────────────────────────────────────
 cache = {"data": None, "ts": 0, "lock": threading.Lock()}
 
@@ -426,6 +534,7 @@ def get_data():
             if d:
                 cache["data"] = d
                 cache["ts"] = now
+        if cache["data"]: check_and_manage_trades(cache["data"])
         return cache["data"]
 
 # ── HTTP Server ────────────────────────────────────────────────────
@@ -465,6 +574,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, d)
             else:
                 self.send_json(503, {"error": "refresh failed"})
+        elif self.path=="/trades":
+            self.send_json(200, load_trades())
         elif self.path=="/history":
             self.send_json(200, read_state_log(200))
         elif self.path=="/attribution":

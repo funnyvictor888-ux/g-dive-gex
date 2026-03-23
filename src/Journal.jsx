@@ -133,11 +133,27 @@ export default function Journal() {
   const [form, setForm] = useState({ dir: "LONG", entry: "", stop: "", tp: "", size: "", notes: "", regime: "", signal: "" });
   const [filter, setFilter] = useState("ALL");
 
+  const SERVER = window.location.hostname === "localhost" ? "http://localhost:7432" : "https://web-production-909e6.up.railway.app";
+
+  const syncFromServer = async () => {
+    try {
+      const r = await fetch(SERVER + "/trades");
+      if (!r.ok) return;
+      const serverTrades = await r.json();
+      if (Array.isArray(serverTrades) && serverTrades.length > 0) {
+        setTrades(serverTrades);
+        saveTrades(serverTrades);
+      }
+    } catch(e) {}
+  };
+
   useEffect(() => {
     setTrades(loadTrades());
     fetchPrice().then(p => p && setPrice(p));
-    const id = setInterval(() => fetchPrice().then(p => p && setPrice(p)), 30000);
-    return () => clearInterval(id);
+    syncFromServer();
+    const id1 = setInterval(() => fetchPrice().then(p => p && setPrice(p)), 30000);
+    const id2 = setInterval(syncFromServer, 60000);
+    return () => { clearInterval(id1); clearInterval(id2); };
   }, []);
 
   const closedTrades = trades.filter(t => t.status === "CLOSED");

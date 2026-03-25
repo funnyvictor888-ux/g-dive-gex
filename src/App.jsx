@@ -1,54 +1,204 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
-const SERVER_URL = window.location.hostname === "localhost" ? "http://localhost:7432" : "https://web-production-909e6.up.railway.app";
-function calcPositionSize(capital,riskPct,entry,stop,finalScalar){const baseRisk=capital*riskPct*2;const scaledRisk=baseRisk*(finalScalar||1.0);return +(scaledRisk/Math.abs(entry-stop)).toFixed(4);}
-const T = { bg:"#0d1117",card:"#161b22",card2:"#1c2128",border:"#30363d",text:"#e6edf3",muted:"#7d8590",green:"#3fb950",red:"#f85149",orange:"#f78166",gold:"#e3b341",blue:"#79c0ff",purple:"#bc8cff" };
+// ── Config ────────────────────────────────────────────────────────
+const SERVER_URL = window.location.hostname === "localhost"
+  ? "http://localhost:7432"
+  : "https://web-production-909e6.up.railway.app";
 
-const RISK_CONFIG = {
-  initialCapital: 10000,
-  maxDailyLossPct: 0.02,
-  maxDrawdownPct: 0.10,
-  maxOpenPositions: 2,
-  killSwitchEnabled: true,
+// ── Theme ─────────────────────────────────────────────────────────
+const C = {
+  bg:      "#080b10",
+  surface: "#0d1117",
+  card:    "#111720",
+  card2:   "#161d28",
+  border:  "#1e2a3a",
+  border2: "#243040",
+  text:    "#e2eaf4",
+  muted:   "#4a6080",
+  dim:     "#2a3a50",
+  green:   "#00d68f",
+  greenDim:"#003d28",
+  red:     "#ff4d6a",
+  redDim:  "#3d0010",
+  orange:  "#ff8c42",
+  gold:    "#ffc947",
+  blue:    "#4db8ff",
+  purple:  "#a78bfa",
+  cyan:    "#22d3ee",
 };
 
+const DEMO = {
+  spot:68129,ts:"2026-03-25 15:59 UTC",total_net_gex:3055.2,
+  put_support:60000,call_resistance:75000,hvl:67000,
+  put_support_0dte:68500,call_resistance_0dte:71000,
+  front_iv:50.20,iv_rank:58.43,term_shape:"CONTANGO",
+  pc_ratio:0.68,hv_30d:67.97,option_score:5,vol_score:5,momentum_score:3,
+  gamma_regime:"LONG_GAMMA",regime:"BULLISH_HIGH_VOL",long_ok:true,short_ok:false,
+  term_ivs:[{expiry:"25MAR",iv:55.2},{expiry:"28MAR",iv:52.1},{expiry:"4APR",iv:50.8},{expiry:"11APR",iv:50.2},{expiry:"25APR",iv:49.8},{expiry:"30MAY",iv:49.1},{expiry:"27JUN",iv:48.5},{expiry:"26SEP",iv:47.9}],
+  call_walls:[75000,71000,80000,85000],put_walls:[60000,68500,65000,58000],
+  pos_gex_nodes:[{strike:75000,net_gex:28.3},{strike:70000,net_gex:18.5},{strike:80000,net_gex:12.1},{strike:72000,net_gex:9.4}],
+  neg_gex_nodes:[{strike:60000,net_gex:-25.8},{strike:65000,net_gex:-18.4},{strike:62000,net_gex:-12.1},{strike:66000,net_gex:-8.9}],
+  n_contracts:8247,_source:"demo",
+  menthorq:{gamma_z:0.8,dealer_bias:0.4,flow_score:0.3,scalar:1.04,regime:"positive",score:0.65,wall_adj:0},
+  funding:{rate:0.0003,score:1,scalar:0.98,regime:"cautious"},
+  layer_budget:{final_scalar:1.02,menthorq_scalar:1.04,funding_scalar:0.98},
+  multi_asset:{weights:{BTC:0.55,GLD:0.28,TLT:0.17},realized_vol:0.42,posture:"RISK_ON",vol_target:0.20},
+};
+
+// ── Helpers ───────────────────────────────────────────────────────
+const fmt  = n => n?.toLocaleString("en-US",{maximumFractionDigits:0});
+const fmtK = n => `$${fmt(n)}`;
+const pct  = n => `${(+n).toFixed(2)}%`;
+const clamp = (x,a,b) => Math.max(a,Math.min(b,x));
+
+// ── Fetch ─────────────────────────────────────────────────────────
+async function fetchLive() {
+  try {
+    const ctrl = new AbortController();
+    setTimeout(() => ctrl.abort(), 4000);
+    const h = await fetch(`${SERVER_URL}/health`, {signal: ctrl.signal});
+    if (!h.ok) return null;
+    const r = await fetch(`${SERVER_URL}/data`);
+    if (!r.ok) return null;
+    const j = await r.json();
+    return j.spot > 10000 ? {...j, _source:"server"} : null;
+  } catch { return null; }
+}
+
+async function fetchBinancePrice() {
+  try {
+    const r = await fetch("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT");
+    if (!r.ok) return null;
+    return +(await r.json()).price;
+  } catch { return null; }
+}
+
+const BINANCE = "https://api.binance.com/api/v3/klines";
+async function fetchOHLCV(interval="4h", limit=120) {
+  try {
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), 7000);
+    const r = await fetch(`${BINANCE}?symbol=BTCUSDT&interval=${interval}&limit=${limit}`, {signal: ctrl.signal});
+    clearTimeout(tid);
+    if (!r.ok) return null;
+    const raw = await r.json();
+    return raw.map(k => ({t:k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4],v:+k[5]}));
+  } catch { return null; }
+}
+
+// ── Indicators ────────────────────────────────────────────────────
+function calcEMA(c, p) { const k=2/(p+1); let e=c[0]; return c.map(v=>{e=v*k+e*(1-k);return e;}); }
+function calcRSI(c, p=14) {
+  let g=0,l=0;
+  for(let i=1;i<=p;i++){const d=c[i]-c[i-1];d>=0?g+=d:l-=d;}
+  let ag=g/p,al=l/p;
+  const r=new Array(p).fill(null);
+  r.push(al===0?100:100-100/(1+ag/al));
+  for(let i=p+1;i<c.length;i++){const d=c[i]-c[i-1];ag=(ag*(p-1)+Math.max(d,0))/p;al=(al*(p-1)+Math.max(-d,0))/p;r.push(al===0?100:100-100/(1+ag/al));}
+  return r;
+}
+function calcMACD(c,f=12,s=26,sig=9) {
+  const ef=calcEMA(c,f),es=calcEMA(c,s),m=ef.map((v,i)=>v-es[i]),signal=calcEMA(m,sig);
+  return {macd:m,signal,hist:m.map((v,i)=>v-signal[i])};
+}
+function calcBB(c,p=20,mult=2) {
+  return c.map((_,i)=>{
+    if(i<p-1)return null;
+    const s=c.slice(i-p+1,i+1),mean=s.reduce((a,b)=>a+b,0)/p,std=Math.sqrt(s.reduce((a,b)=>a+(b-mean)**2,0)/p);
+    return {upper:mean+mult*std,middle:mean,lower:mean-mult*std};
+  });
+}
+
+function analyzeCandles(candles) {
+  if(!candles||candles.length<40) return null;
+  const closes=candles.map(c=>c.c),n=closes.length-1;
+  const ema9=calcEMA(closes,9),ema21=calcEMA(closes,21),rsis=calcRSI(closes,14);
+  const {macd,signal,hist}=calcMACD(closes);
+  const bbs=calcBB(closes,20);
+  const price=closes[n],rsi=rsis[n],bb=bbs[n],macdV=macd[n],sigV=signal[n],histV=hist[n];
+  let score=0;const reasons=[];
+  const ec=ema9[n]>ema21[n],ecp=ema9[n-1]>ema21[n-1];
+  if(ec){score++;reasons.push({txt:`EMA9 > EMA21`,bull:true});}
+  else{score--;reasons.push({txt:`EMA9 < EMA21`,bull:false});}
+  if(ec&&!ecp) reasons.push({txt:"⚡ Golden Cross",bull:true,strong:true});
+  if(!ec&&ecp) reasons.push({txt:"⚡ Death Cross",bull:false,strong:true});
+  if(rsi>70){score--;reasons.push({txt:`RSI ${rsi.toFixed(1)} OB`,bull:false});}
+  else if(rsi<30){score++;reasons.push({txt:`RSI ${rsi.toFixed(1)} OS`,bull:true});}
+  else if(rsi>55){score++;reasons.push({txt:`RSI ${rsi.toFixed(1)} Bull`,bull:true});}
+  else if(rsi<45){score--;reasons.push({txt:`RSI ${rsi.toFixed(1)} Bear`,bull:false});}
+  else reasons.push({txt:`RSI ${rsi.toFixed(1)} Nötr`,bull:null});
+  if(macdV>sigV){score++;reasons.push({txt:`MACD Bull +${histV.toFixed(0)}`,bull:true});}
+  else{score--;reasons.push({txt:`MACD Bear ${histV.toFixed(0)}`,bull:false});}
+  if(bb){const bp=(price-bb.lower)/(bb.upper-bb.lower);
+    if(bp>0.85){score--;reasons.push({txt:`BB Üst`,bull:false});}
+    else if(bp<0.15){score++;reasons.push({txt:`BB Alt`,bull:true});}
+    else if(bp>0.5){score++;reasons.push({txt:`BB Orta+`,bull:true});}}
+  let sc,sl;
+  if(score>=3){sc=C.green;sl="GÜÇLÜ LONG";}
+  else if(score>=1){sc="#44e8a0";sl="ZAYIF LONG";}
+  else if(score<=-3){sc=C.red;sl="GÜÇLÜ SHORT";}
+  else if(score<=-1){sc=C.orange;sl="ZAYIF SHORT";}
+  else{sc=C.muted;sl="BEKLE";}
+  return {price,rsi,macdV,sigV,histV,ema9:ema9[n],ema21:ema21[n],bb,score,signal_color:sc,signal_label:sl,reasons};
+}
+
+function confluenceScore(t4,t1,opt) {
+  if(!t4) return null;
+  let score=0;const items=[];
+  score+=t4.score; items.push({src:"4H Teknik",val:t4.score});
+  if(t1){score+=Math.round(t1.score*0.5);items.push({src:"1H Teknik",val:Math.round(t1.score*0.5)});}
+  if(opt.total_net_gex>0){score++;items.push({src:"GEX Pozitif",val:1});}
+  else{score--;items.push({src:"GEX Negatif",val:-1});}
+  if(opt.spot>opt.hvl){score++;items.push({src:"Spot > HVL",val:1});}
+  else{score--;items.push({src:"Spot < HVL",val:-1});}
+  const dc=(opt.call_resistance-opt.spot)/opt.spot*100;
+  if(dc<3){score--;items.push({src:`CR Yakın ${dc.toFixed(1)}%`,val:-1});}
+  if(dc>8){score++;items.push({src:`CR Uzak ${dc.toFixed(1)}%`,val:1});}
+  let label,color;
+  if(score>=5){label="GÜÇLÜ LONG";color=C.green;}
+  else if(score>=2){label="ZAYIF LONG";color="#44e8a0";}
+  else if(score<=-5){label="GÜÇLÜ SHORT";color=C.red;}
+  else if(score<=-2){label="ZAYIF SHORT";color=C.orange;}
+  else{label="NÖTR";color:C.muted;}
+  return {score,label,color,items};
+}
+
+// ── Risk & Backtest ───────────────────────────────────────────────
+const RISK_CONFIG = {initialCapital:10000,maxDailyLossPct:0.02,maxDrawdownPct:0.10,maxOpenPositions:2,killSwitchEnabled:true};
+
 function getRiskStatus(trades) {
-  const today = new Date().toISOString().slice(0,10);
-  const capital = RISK_CONFIG.initialCapital;
-  const todayTrades = trades.filter(t => t.status==="CLOSED" && t.exitDate && t.exitDate.startsWith(today));
-  const dailyPnl = todayTrades.reduce((a,t) => a+(t.pnl||0), 0);
-  const dailyLossLimit = capital * RISK_CONFIG.maxDailyLossPct;
-  const dailyLimitHit = dailyPnl <= -dailyLossLimit;
-  let peak=capital, equity=capital, maxDD=0;
-  const closed = trades.filter(t=>t.status==="CLOSED").sort((a,b)=>new Date(a.exitDate)-new Date(b.exitDate));
-  closed.forEach(t=>{equity+=(t.pnl||0);if(equity>peak)peak=equity;const dd=(peak-equity)/peak;if(dd>maxDD)maxDD=dd;});
-  const drawdownLimitHit = maxDD >= RISK_CONFIG.maxDrawdownPct;
-  const openCount = trades.filter(t=>t.status==="OPEN").length;
-  const maxPosHit = openCount >= RISK_CONFIG.maxOpenPositions;
-  const killSwitch = RISK_CONFIG.killSwitchEnabled && (dailyLimitHit || drawdownLimitHit);
-  return {dailyPnl:+dailyPnl.toFixed(2),dailyLossLimit:+dailyLossLimit.toFixed(2),dailyLimitHit,maxDD:+(maxDD*100).toFixed(2),drawdownLimitHit,openCount,maxPosHit,killSwitch,equity:+equity.toFixed(2),peak:+peak.toFixed(2)};
+  const today=new Date().toISOString().slice(0,10),capital=RISK_CONFIG.initialCapital;
+  const todayTrades=trades.filter(t=>t.status==="CLOSED"&&t.exitDate?.startsWith(today));
+  const dailyPnl=todayTrades.reduce((a,t)=>a+(t.pnl||0),0);
+  const dailyLossLimit=capital*RISK_CONFIG.maxDailyLossPct;
+  const dailyLimitHit=dailyPnl<=-dailyLossLimit;
+  let peak=capital,equity=capital,maxDD=0;
+  trades.filter(t=>t.status==="CLOSED").sort((a,b)=>new Date(a.exitDate)-new Date(b.exitDate)).forEach(t=>{equity+=(t.pnl||0);if(equity>peak)peak=equity;const dd=(peak-equity)/peak;if(dd>maxDD)maxDD=dd;});
+  const drawdownLimitHit=maxDD>=RISK_CONFIG.maxDrawdownPct;
+  const openCount=trades.filter(t=>t.status==="OPEN").length;
+  const killSwitch=RISK_CONFIG.killSwitchEnabled&&(dailyLimitHit||drawdownLimitHit);
+  return {dailyPnl:+dailyPnl.toFixed(2),dailyLossLimit:+dailyLossLimit.toFixed(2),dailyLimitHit,maxDD:+(maxDD*100).toFixed(2),drawdownLimitHit,openCount,maxPosHit:openCount>=RISK_CONFIG.maxOpenPositions,killSwitch,equity:+equity.toFixed(2)};
 }
 
 function runBacktest(candles) {
-  if(!candles||candles.length<60)return null;
+  if(!candles||candles.length<60) return null;
   const closes=candles.map(c=>c.c),highs=candles.map(c=>c.h),lows=candles.map(c=>c.l);
   function ema(arr,p){const k=2/(p+1);let e=arr[0];return arr.map(v=>{e=v*k+e*(1-k);return e;});}
   function rsiArr(arr,p=14){let g=0,l=0;for(let i=1;i<=p;i++){const d=arr[i]-arr[i-1];d>=0?g+=d:l-=d;}let ag=g/p,al=l/p;const r=new Array(p).fill(null);r.push(al===0?100:100-100/(1+ag/al));for(let i=p+1;i<arr.length;i++){const d=arr[i]-arr[i-1];ag=(ag*(p-1)+Math.max(d,0))/p;al=(al*(p-1)+Math.max(-d,0))/p;r.push(al===0?100:100-100/(1+ag/al));}return r;}
   function atr(h,l,c,p=14){const tr=h.map((hv,i)=>i===0?hv-l[i]:Math.max(hv-l[i],Math.abs(hv-c[i-1]),Math.abs(l[i]-c[i-1])));return ema(tr,p);}
   const ema9=ema(closes,9),ema21=ema(closes,21),rsis=rsiArr(closes,14);
-  const macdLine=ema(closes,12).map((v,i)=>v-ema(closes,26)[i]);
-  const sig=ema(macdLine,9),atrs=atr(highs,lows,closes,14);
+  const macdLine=ema(closes,12).map((v,i)=>v-ema(closes,26)[i]),sig=ema(macdLine,9),atrs=atr(highs,lows,closes,14);
   const trades=[];let inTrade=false,tradeDir=null,entry=0,stop=0,tp=0,tradeSize=0;
   let equity=10000,peak=10000,maxDD=0;
   for(let i=30;i<closes.length-1;i++){
     const price=closes[i],atrV=atrs[i];
     if(inTrade){
       if(tradeDir==="LONG"){
-        if(price<=stop){const pnl=(stop-entry)*tradeSize;trades.push({pnl:+pnl.toFixed(2),result:"STOP"});equity+=pnl;inTrade=false;}
-        else if(price>=tp){const pnl=(tp-entry)*tradeSize;trades.push({pnl:+pnl.toFixed(2),result:"TP"});equity+=pnl;inTrade=false;}
+        if(price<=stop){const pnl=(stop-entry)*tradeSize;trades.push({pnl:+pnl.toFixed(2),result:"STOP",dir:"LONG"});equity+=pnl;inTrade=false;}
+        else if(price>=tp){const pnl=(tp-entry)*tradeSize;trades.push({pnl:+pnl.toFixed(2),result:"TP",dir:"LONG"});equity+=pnl;inTrade=false;}
       } else {
-        if(price>=stop){const pnl=(entry-stop)*tradeSize;trades.push({pnl:+pnl.toFixed(2),result:"STOP"});equity+=pnl;inTrade=false;}
-        else if(price<=tp){const pnl=(entry-tp)*tradeSize;trades.push({pnl:+pnl.toFixed(2),result:"TP"});equity+=pnl;inTrade=false;}
+        if(price>=stop){const pnl=(entry-stop)*tradeSize;trades.push({pnl:+pnl.toFixed(2),result:"STOP",dir:"SHORT"});equity+=pnl;inTrade=false;}
+        else if(price<=tp){const pnl=(entry-tp)*tradeSize;trades.push({pnl:+pnl.toFixed(2),result:"TP",dir:"SHORT"});equity+=pnl;inTrade=false;}
       }
       if(equity>peak)peak=equity;const dd=(peak-equity)/peak;if(dd>maxDD)maxDD=dd;
     }
@@ -60,7 +210,7 @@ function runBacktest(candles) {
       else if(bear){entry=price;stop=price+atrV*2;tp=price-atrV*6;tradeSize=riskAmt/(atrV*2);inTrade=true;tradeDir="SHORT";}
     }
   }
-  if(!trades.length)return null;
+  if(!trades.length) return null;
   const wins=trades.filter(t=>t.pnl>0),losses=trades.filter(t=>t.pnl<0);
   const totalPnl=trades.reduce((a,t)=>a+t.pnl,0);
   const winRate=wins.length/trades.length*100;
@@ -72,655 +222,676 @@ function runBacktest(candles) {
   return {trades:trades.length,wins:wins.length,winRate:+winRate.toFixed(1),totalPnl:+totalPnl.toFixed(2),finalEquity:+equity.toFixed(2),maxDD:+(maxDD*100).toFixed(2),profitFactor:+pf.toFixed(2),sharpe:+sharpe.toFixed(2),avgWin:+avgWin.toFixed(2),avgLoss:+avgLoss.toFixed(2),expectancy:+((winRate/100*avgWin-(1-winRate/100)*avgLoss)).toFixed(2)};
 }
 
-const DEMO = {
-  spot:68129,ts:"2026-03-06 15:59 EST",total_net_gex:3055.2,
-  put_support:60000,call_resistance:75000,hvl:67000,
-  put_support_0dte:68500,call_resistance_0dte:71000,
-  front_iv:50.20,iv_rank:58.43,term_shape:"CONTANGO",
-  pc_ratio:0.68,hv_30d:67.97,option_score:5,vol_score:5,momentum_score:3,
-  gamma_regime:"LONG_GAMMA",regime:"BULLISH_HIGH_VOL",long_ok:true,short_ok:false,
-  term_ivs:[
-    {expiry:"0DTE",iv:55.2},{expiry:"7MAR",iv:52.1},{expiry:"14MAR",iv:50.8},
-    {expiry:"21MAR",iv:50.2},{expiry:"28MAR",iv:49.8},{expiry:"25APR",iv:49.1},
-    {expiry:"27JUN",iv:48.5},{expiry:"26SEP",iv:47.9},
-  ],
-  call_walls:[75000,71000,80000,85000],put_walls:[60000,68500,65000,58000],
-  pos_gex_nodes:[{strike:75000,net_gex:28.3},{strike:70000,net_gex:18.5},{strike:80000,net_gex:12.1},{strike:72000,net_gex:9.4}],
-  neg_gex_nodes:[{strike:60000,net_gex:-25.8},{strike:65000,net_gex:-18.4},{strike:62000,net_gex:-12.1},{strike:66000,net_gex:-8.9}],
-  n_contracts:8247,_source:"demo",
-};
+// ── Smart Notes Generator ─────────────────────────────────────────
+function generateNotes(d, conf, bt) {
+  const notes = [];
+  if(!d) return notes;
+  // GEX notu
+  if(d.total_net_gex > 5000) notes.push({type:"bull",icon:"◆",text:`Net GEX +${d.total_net_gex.toFixed(0)}M — Dealer hedge alımları spot'u destekliyor`});
+  else if(d.total_net_gex < -2000) notes.push({type:"bear",icon:"◆",text:`Net GEX ${d.total_net_gex.toFixed(0)}M — Dealer hedge satışları volatiliteyi artırabilir`});
+  // IV notu
+  if(d.iv_rank > 70) notes.push({type:"warn",icon:"⚡",text:`IV Rank ${d.iv_rank.toFixed(0)}% — Opsiyon primleri pahalı, satış stratejileri avantajlı`});
+  else if(d.iv_rank < 25) notes.push({type:"info",icon:"⚡",text:`IV Rank ${d.iv_rank.toFixed(0)}% — IV düşük, yakın volatilite patlama olabilir`});
+  // Term structure
+  if(d.term_shape==="BACKWARDATION") notes.push({type:"warn",icon:"📉",text:`Backwardation — Kısa vade IV yüksek, piyasa yakın hareketi fiyatlıyor`});
+  // HVL mesafesi
+  const distHVL = Math.abs(d.spot-d.hvl)/d.spot*100;
+  if(distHVL < 1) notes.push({type:"warn",icon:"🎯",text:`Spot HVL'e ${distHVL.toFixed(2)}% yakın — Kritik Gamma flip bölgesi`});
+  // Konfluens
+  if(conf && conf.score >= 4) notes.push({type:"bull",icon:"✦",text:`Konfluens +${conf.score} — Güçlü çoklu sinyal uyumu, yüksek güven`});
+  else if(conf && conf.score <= -4) notes.push({type:"bear",icon:"✦",text:`Konfluens ${conf.score} — Güçlü aşağı baskı, short setup`});
+  // PC ratio
+  if(d.pc_ratio > 1.3) notes.push({type:"bull",icon:"📊",text:`P/C OI ${d.pc_ratio.toFixed(2)} — Aşırı put birikimi, contrarian yükseliş sinyali`});
+  else if(d.pc_ratio < 0.6) notes.push({type:"warn",icon:"📊",text:`P/C OI ${d.pc_ratio.toFixed(2)} — Call ağırlıklı, dikkatli ol`});
+  // Backtest
+  if(bt && bt.profitFactor < 1) notes.push({type:"warn",icon:"⚠",text:`Backtest Profit Factor ${bt.profitFactor}x — Mevcut sinyal parametreleri optimize edilmeli`});
+  else if(bt && bt.profitFactor > 2) notes.push({type:"bull",icon:"⚠",text:`Backtest Profit Factor ${bt.profitFactor}x — Güçlü sinyal kalitesi`});
+  // MenthorQ
+  if(d.menthorq?.regime === "stress") notes.push({type:"bear",icon:"🔴",text:`MenthorQ Stress — Kurumsal pozisyonlama savunmacı, scalar 0.85x`});
+  else if(d.menthorq?.regime === "strong_squeeze") notes.push({type:"bull",icon:"🟢",text:`MenthorQ Squeeze — Kurumsal alım baskısı yüksek, scalar ${d.menthorq.scalar}x`});
+  return notes.slice(0,5);
+}
 
-const fmt=(n)=>n?.toLocaleString("en-US",{maximumFractionDigits:0});
-const fmtK=(n)=>`$${fmt(n)}`;
-const pct=(n)=>`${(+n).toFixed(2)}%`;
-const scoreColor=(s)=>s>=4?T.green:s>=3?T.gold:s>=2?"#e09b39":T.red;
-const scoreLabel=(s)=>["Very Low","Low","Neutral","High","Very High","Very High"][Math.min(+s,5)];
-
-// ── SVG CHARTS ────────────────────────────────────────────────────
-
-function GEXChart({ data, spot, hvl, callRes, putSup }) {
-  const W=620, H=320, PL=42, PR=20, PT=8, PB=8;
-  const cw=W-PL-PR, ch=H-PT-PB;
-  const maxV=Math.max(32,...data.map(r=>Math.abs(r.gex)));
-  const xScale=v=>(v/maxV)*(cw/2)+cw/2;
-  const barH=Math.max(3, ch/data.length - 2);
-  const rowH=ch/data.length;
-  const spotIdx=data.findIndex(r=>r.label===`${Math.round(spot/1000)}K`);
-  const hvlIdx=data.findIndex(r=>r.label===`${Math.round(hvl/1000)}K`);
-  const crIdx=data.findIndex(r=>r.label===`${Math.round(callRes/1000)}K`);
-  const psIdx=data.findIndex(r=>r.label===`${Math.round(putSup/1000)}K`);
-  const refY=(idx)=>idx>=0?PT+idx*rowH+rowH/2:null;
+// ── SVG Charts ────────────────────────────────────────────────────
+function GEXChart({data, spot, hvl, callRes, putSup}) {
+  const W=580,H=300,PL=44,PR=16,PT=8,PB=16;
+  const cw=W-PL-PR,ch=H-PT-PB;
+  const maxV=Math.max(30,...data.map(r=>Math.abs(r.gex)));
+  const rowH=ch/data.length,barH=Math.max(3,rowH-3),x0=PL+cw/2;
+  const xS=v=>(v/maxV)*(cw/2);
+  const refs={[`${Math.round(spot/1000)}K`]:"rgba(226,234,244,0.5)",[`${Math.round(hvl/1000)}K`]:C.gold,[`${Math.round(callRes/1000)}K`]:C.green,[`${Math.round(putSup/1000)}K`]:C.red};
   return(
     <svg width={W} height={H} style={{display:"block"}}>
-      {/* Grid */}
-      {[-3,-2,-1,0,1,2,3].map(v=>{
-        const x=PL+xScale(v*(maxV/3));
-        return <line key={v} x1={x} y1={PT} x2={x} y2={H-PB} stroke={T.border} strokeWidth={v===0?1.5:0.5} strokeDasharray={v===0?"":"3,3"}/>;
-      })}
-      {/* X axis labels */}
-      {[-2,-1,0,1,2].map(v=>{
-        const x=PL+xScale(v*(maxV/2));
-        return <text key={v} x={x} y={H} fill={T.muted} fontSize={8} textAnchor="middle">{v*(maxV/2).toFixed(0)}M</text>;
-      })}
-      {/* Bars */}
+      <defs>
+        <linearGradient id="gpos" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stopColor={C.green} stopOpacity="0.3"/>
+          <stop offset="100%" stopColor={C.green} stopOpacity="0.9"/>
+        </linearGradient>
+        <linearGradient id="gneg" x1="100%" y1="0%" x2="0%" y2="0%">
+          <stop offset="0%" stopColor={C.orange} stopOpacity="0.3"/>
+          <stop offset="100%" stopColor={C.orange} stopOpacity="0.9"/>
+        </linearGradient>
+      </defs>
+      <line x1={x0} y1={PT} x2={x0} y2={H-PB} stroke={C.border2} strokeWidth={1}/>
+      {[-2,-1,1,2].map(v=>{const x=x0+xS(v*(maxV/2));return <line key={v} x1={x} y1={PT} x2={x} y2={H-PB} stroke={C.border} strokeWidth={0.5} strokeDasharray="3,3"/>;})}
       {data.map((row,i)=>{
         const y=PT+i*rowH+(rowH-barH)/2;
-        const x0=PL+cw/2;
-        const barW=Math.abs(xScale(row.gex)-cw/2);
-        const bx=row.gex>=0?x0:x0-barW;
+        const bw=Math.abs(xS(row.gex));
+        const bx=row.gex>=0?x0:x0-bw;
+        const refColor=refs[row.label];
         return(
           <g key={i}>
-            <rect x={bx} y={y} width={barW} height={barH} fill={row.gex>=0?T.green:T.orange} opacity={0.88} rx={2}/>
-            <text x={PL-4} y={PT+i*rowH+rowH/2+4} fill={T.muted} fontSize={9} textAnchor="end">{row.label}</text>
+            {refColor&&<line x1={PL} y1={PT+i*rowH+rowH/2} x2={W-PR} y2={PT+i*rowH+rowH/2} stroke={refColor} strokeWidth={1.5} strokeDasharray="6,3"/>}
+            <rect x={bx} y={y} width={Math.max(bw,1)} height={barH} fill={row.gex>=0?"url(#gpos)":"url(#gneg)"} rx={2}/>
+            <text x={PL-5} y={PT+i*rowH+rowH/2+3} fill={C.muted} fontSize={8.5} textAnchor="end" fontFamily="monospace">{row.label}</text>
           </g>
         );
       })}
-      {/* Reference lines */}
-      {refY(spotIdx)&&<line x1={PL} y1={refY(spotIdx)} x2={W-PR} y2={refY(spotIdx)} stroke="rgba(230,237,243,0.6)" strokeWidth={1.5} strokeDasharray="5,3"/>}
-      {refY(hvlIdx)&&<line x1={PL} y1={refY(hvlIdx)} x2={W-PR} y2={refY(hvlIdx)} stroke={T.gold} strokeWidth={1.5} strokeDasharray="5,3"/>}
-      {refY(crIdx)&&<line x1={PL} y1={refY(crIdx)} x2={W-PR} y2={refY(crIdx)} stroke={T.green} strokeWidth={1.5} strokeDasharray="5,3"/>}
-      {refY(psIdx)&&<line x1={PL} y1={refY(psIdx)} x2={W-PR} y2={refY(psIdx)} stroke={T.orange} strokeWidth={1.5} strokeDasharray="5,3"/>}
     </svg>
   );
 }
 
-function IVOIChart({ data, spot }) {
-  const W=300, H=260, PL=38, PR=10, PT=8, PB=8;
-  const cw=W-PL-PR, ch=H-PT-PB;
+function TermChart({data}) {
+  const W=280,H=220,PL=36,PR=12,PT=16,PB=24;
+  const cw=W-PL-PR,ch=H-PT-PB;
+  if(!data||data.length<2) return <div style={{color:C.muted,fontSize:11,padding:20}}>Veri yükleniyor...</div>;
+  const ivs=data.map(d=>d.iv);
+  const minIV=Math.min(...ivs)-2,maxIV=Math.max(...ivs)+2;
+  const xS=i=>PL+i*(cw/(data.length-1));
+  const yS=v=>PT+ch-(v-minIV)/(maxIV-minIV)*ch;
+  const pts=data.map((d,i)=>`${xS(i)},${yS(d.iv)}`).join(" ");
+  const isContango=ivs[ivs.length-1]>ivs[0];
+  const lineColor=isContango?C.green:C.red;
+  return(
+    <svg width={W} height={H} style={{display:"block"}}>
+      <defs>
+        <linearGradient id="termgrad" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stopColor={lineColor} stopOpacity="0.3"/>
+          <stop offset="100%" stopColor={lineColor} stopOpacity="0"/>
+        </linearGradient>
+      </defs>
+      {[0,1,2,3].map(i=>{const v=minIV+i*(maxIV-minIV)/3;return(<g key={i}><line x1={PL} y1={yS(v)} x2={W-PR} y2={yS(v)} stroke={C.border} strokeWidth={0.5} strokeDasharray="3,3"/><text x={PL-4} y={yS(v)+3} fill={C.muted} fontSize={8} textAnchor="end">{v.toFixed(0)}%</text></g>);})}
+      <polygon points={`${data.map((d,i)=>`${xS(i)},${yS(d.iv)}`).join(" ")} ${xS(data.length-1)},${H-PB} ${PL},${H-PB}`} fill="url(#termgrad)"/>
+      <polyline points={pts} fill="none" stroke={lineColor} strokeWidth={2.5}/>
+      {data.map((d,i)=>(<g key={i}><circle cx={xS(i)} cy={yS(d.iv)} r={3.5} fill={lineColor} stroke={C.bg} strokeWidth={1.5}/><text x={xS(i)} y={H-6} fill={C.muted} fontSize={7.5} textAnchor="middle">{d.expiry.replace("26","").replace("25","")}</text></g>))}
+    </svg>
+  );
+}
+
+function IVOIChart({data, spot}) {
+  const W=280,H=220,PL=36,PR=8,PT=8,PB=8;
+  const cw=W-PL-PR,ch=H-PT-PB;
   const maxV=Math.max(...data.map(r=>Math.max(r.calls,r.puts)));
-  const xScale=v=>(v/maxV)*cw;
-  const rowH=ch/data.length;
-  const barH=Math.max(2,(rowH-4)/2);
-  const spotIdx=data.findIndex(r=>r.label===`${Math.round(spot/1000)}K`);
-  const refY=spotIdx>=0?PT+spotIdx*rowH+rowH/2:null;
+  const rowH=ch/data.length,barH=Math.max(2,(rowH-4)/2);
+  const spotLbl=`${Math.round(spot/1000)}K`;
   return(
     <svg width={W} height={H} style={{display:"block"}}>
       {data.map((row,i)=>{
-        const y=PT+i*rowH;
-        return(
-          <g key={i}>
-            <rect x={PL} y={y+(rowH-barH*2-2)/2} width={xScale(row.calls)} height={barH} fill={T.green} opacity={0.82} rx={1}/>
-            <rect x={PL} y={y+(rowH-barH*2-2)/2+barH+2} width={xScale(row.puts)} height={barH} fill={T.orange} opacity={0.82} rx={1}/>
-            <text x={PL-4} y={y+rowH/2+4} fill={T.muted} fontSize={9} textAnchor="end">{row.label}</text>
-          </g>
-        );
+        const y=PT+i*rowH,isSpot=row.label===spotLbl;
+        return(<g key={i}>
+          {isSpot&&<rect x={PL} y={y} width={cw} height={rowH} fill={C.blue} fillOpacity={0.06}/>}
+          <rect x={PL} y={y+(rowH-barH*2-2)/2} width={Math.max((row.calls/maxV)*cw,1)} height={barH} fill={C.green} opacity={0.8} rx={1}/>
+          <rect x={PL} y={y+(rowH-barH*2-2)/2+barH+2} width={Math.max((row.puts/maxV)*cw,1)} height={barH} fill={C.red} opacity={0.8} rx={1}/>
+          <text x={PL-5} y={y+rowH/2+3} fill={isSpot?C.text:C.muted} fontSize={8.5} textAnchor="end" fontFamily="monospace">{row.label}</text>
+        </g>);
       })}
-      {refY&&<line x1={PL} y1={refY} x2={W-PR} y2={refY} stroke="rgba(230,237,243,0.5)" strokeWidth={1} strokeDasharray="4,2"/>}
     </svg>
   );
 }
 
-function TermChart({ data }) {
-  const W=300, H=260, PL=38, PR=16, PT=16, PB=24;
-  const cw=W-PL-PR, ch=H-PT-PB;
-  const ivs=data.map(d=>d.iv);
-  const minIV=Math.min(...ivs)-1, maxIV=Math.max(...ivs)+1;
-  const xScale=i=>PL+i*(cw/(data.length-1));
-  const yScale=v=>PT+ch-(v-minIV)/(maxIV-minIV)*ch;
-  const pts=data.map((d,i)=>`${xScale(i)},${yScale(d.iv)}`).join(" ");
+function MiniBarChart({value, max, color}) {
+  const pct = clamp((value/max)*100,0,100);
   return(
-    <svg width={W} height={H} style={{display:"block"}}>
-      {/* Grid */}
-      {[0,1,2,3].map(i=>{
-        const v=minIV+i*(maxIV-minIV)/3;
-        const y=yScale(v);
-        return <line key={i} x1={PL} y1={y} x2={W-PR} y2={y} stroke={T.border} strokeWidth={0.5} strokeDasharray="3,3"/>;
-      })}
-      {/* Y labels */}
-      {[0,1,2,3].map(i=>{
-        const v=minIV+i*(maxIV-minIV)/3;
-        return <text key={i} x={PL-4} y={yScale(v)+4} fill={T.muted} fontSize={8} textAnchor="end">{v.toFixed(0)}%</text>;
-      })}
-      {/* Line */}
-      <polyline points={pts} fill="none" stroke={T.blue} strokeWidth={2.5}/>
-      {/* Dots + X labels */}
-      {data.map((d,i)=>(
-        <g key={i}>
-          <circle cx={xScale(i)} cy={yScale(d.iv)} r={3.5} fill={T.blue}/>
-          <text x={xScale(i)} y={H-6} fill={T.muted} fontSize={8} textAnchor="middle">{d.expiry}</text>
-        </g>
-      ))}
-    </svg>
+    <div style={{height:4,background:C.dim,borderRadius:99,overflow:"hidden",marginTop:4}}>
+      <div style={{height:"100%",width:`${pct}%`,background:color,borderRadius:99,transition:"width 0.5s ease"}}/>
+    </div>
   );
 }
 
-// ── FETCH ─────────────────────────────────────────────────────────
-async function fetchLive(){
-  try{const ctrl=new AbortController();setTimeout(()=>ctrl.abort(),3000);const h=await fetch(`${SERVER_URL}/health`,{signal:ctrl.signal});if(!h.ok)return null;const health=await h.json();if(!health.ok)return null;const r=await fetch(`${SERVER_URL}/data`);if(!r.ok)return null;const j=await r.json();return j.spot>10000?{...j,_source:"server"}:null;}catch{return null;}
+// ── GEX Data Builder ──────────────────────────────────────────────
+function buildGEXData(d) {
+  const nm={};[...(d.pos_gex_nodes||[]),...(d.neg_gex_nodes||[])].forEach(n=>{nm[n.strike]=n.net_gex;});
+  const spot=d.spot,lo=Math.ceil((spot*0.74)/1000)*1000,hi=Math.ceil((spot*1.26)/1000)*1000;
+  const rows=[];
+  for(let s=hi;s>=lo;s-=1000){const k=nm[s];let gex=k!==undefined?k:(s<spot?-6*Math.exp(-Math.abs((s-spot)/spot)*6):5*Math.exp(-Math.abs((s-spot)/spot)*7));rows.push({label:`${(s/1000).toFixed(0)}K`,gex:Math.round(gex*10)/10});}
+  return rows;
 }
-async function fetchBinancePrice(){try{const r=await fetch("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT");if(!r.ok)return null;return +(await r.json()).price;}catch{return null;}}
-const BINANCE="https://api.binance.com/api/v3/klines";
-async function fetchOHLCV(interval="4h",limit=120){
-  try{const ctrl=new AbortController();const tid=setTimeout(()=>ctrl.abort(),6000);const r=await fetch(`${BINANCE}?symbol=BTCUSDT&interval=${interval}&limit=${limit}`,{signal:ctrl.signal});clearTimeout(tid);if(!r.ok)return null;const raw=await r.json();return raw.map(k=>({t:k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4],v:+k[5]}));}catch{return null;}
-}
-function calcEMA(c,p){const k=2/(p+1);let e=c[0];return c.map(v=>{e=v*k+e*(1-k);return e;});}
-function calcRSI(c,p=14){let g=0,l=0;for(let i=1;i<=p;i++){const d=c[i]-c[i-1];d>=0?g+=d:l-=d;}let ag=g/p,al=l/p;const r=new Array(p).fill(null);r.push(al===0?100:100-100/(1+ag/al));for(let i=p+1;i<c.length;i++){const d=c[i]-c[i-1];ag=(ag*(p-1)+Math.max(d,0))/p;al=(al*(p-1)+Math.max(-d,0))/p;r.push(al===0?100:100-100/(1+ag/al));}return r;}
-function calcMACD(c,f=12,s=26,sig=9){const ef=calcEMA(c,f),es=calcEMA(c,s),m=ef.map((v,i)=>v-es[i]),signal=calcEMA(m,sig);return{macd:m,signal,hist:m.map((v,i)=>v-signal[i])};}
-function calcBB(c,p=20,mult=2){return c.map((_,i)=>{if(i<p-1)return null;const s=c.slice(i-p+1,i+1),mean=s.reduce((a,b)=>a+b,0)/p,std=Math.sqrt(s.reduce((a,b)=>a+(b-mean)**2,0)/p);return{upper:mean+mult*std,middle:mean,lower:mean-mult*std};});}
-function analyzeCandles(candles){
-  if(!candles||candles.length<40)return null;
-  const closes=candles.map(c=>c.c),n=closes.length-1;
-  const ema9=calcEMA(closes,9),ema21=calcEMA(closes,21),rsis=calcRSI(closes,14);
-  const{macd,signal,hist}=calcMACD(closes);const bbs=calcBB(closes,20);
-  const price=closes[n],rsi=rsis[n],bb=bbs[n],macdV=macd[n],sigV=signal[n],histV=hist[n],histPrev=hist[n-1];
-  let score=0;const reasons=[];
-  const ec=ema9[n]>ema21[n],ecp=ema9[n-1]>ema21[n-1];
-  if(ec){score++;reasons.push({txt:`EMA9 > EMA21 (${ema9[n].toFixed(0)} > ${ema21[n].toFixed(0)})`,bull:true});}
-  else{score--;reasons.push({txt:`EMA9 < EMA21 (${ema9[n].toFixed(0)} < ${ema21[n].toFixed(0)})`,bull:false});}
-  if(ec&&!ecp)reasons.push({txt:"⚡ EMA Golden Cross!",bull:true,strong:true});
-  if(!ec&&ecp)reasons.push({txt:"⚡ EMA Death Cross!",bull:false,strong:true});
-  if(rsi>70){score--;reasons.push({txt:`RSI ${rsi.toFixed(1)} — Aşırı Alım`,bull:false});}
-  else if(rsi<30){score++;reasons.push({txt:`RSI ${rsi.toFixed(1)} — Aşırı Satım`,bull:true});}
-  else if(rsi>55){score++;reasons.push({txt:`RSI ${rsi.toFixed(1)} — Bullish`,bull:true});}
-  else if(rsi<45){score--;reasons.push({txt:`RSI ${rsi.toFixed(1)} — Bearish`,bull:false});}
-  else reasons.push({txt:`RSI ${rsi.toFixed(1)} — Nötr`,bull:null});
-  if(macdV>sigV){score++;reasons.push({txt:`MACD +${histV.toFixed(1)} Bullish`,bull:true});}
-  else{score--;reasons.push({txt:`MACD ${histV.toFixed(1)} Bearish`,bull:false});}
-  if(bb){const bp=(price-bb.lower)/(bb.upper-bb.lower);
-    if(bp>0.85){score--;reasons.push({txt:`BB Üst banda yakın`,bull:false});}
-    else if(bp<0.15){score++;reasons.push({txt:`BB Alt banda yakın`,bull:true});}
-    else if(bp>0.5){score++;reasons.push({txt:`BB Orta üstü`,bull:true});}}
-  let sc,sl;
-  if(score>=3){sc=T.green;sl="▲ GÜÇLÜ LONG";}
-  else if(score>=1){sc="#58c76e";sl="▲ ZAYIF LONG";}
-  else if(score<=-3){sc=T.red;sl="▼ GÜÇLÜ SHORT";}
-  else if(score<=-1){sc=T.orange;sl="▼ ZAYIF SHORT";}
-  else{sc=T.muted;sl="— BEKLE";}
-  return{price,rsi,macdV,sigV,histV,ema9:ema9[n],ema21:ema21[n],bb,score,signal_color:sc,signal_label:sl,reasons};
-}
-function confluenceScore(t4,t1,opt){
-  if(!t4)return null;
-  let score=0;const items=[];
-  score+=t4.score;items.push({src:"4H Teknik",val:t4.score});
-  if(t1){score+=Math.round(t1.score*0.5);items.push({src:"1H Teknik",val:t1.score});}
-  if(opt.total_net_gex>0){score++;items.push({src:"GEX POZİTİF",val:1});}else{score--;items.push({src:"GEX NEGATİF",val:-1});}
-  if(opt.spot>opt.hvl){score++;items.push({src:"Spot > HVL",val:1});}else{score--;items.push({src:"Spot < HVL",val:-1});}
-  const dc=(opt.call_resistance-opt.spot)/opt.spot*100;
-  if(dc<3){score--;items.push({src:`Call Direnç Yakın (${dc.toFixed(1)}%)`,val:-1});}
-  if(dc>8){score++;items.push({src:`Call Direnç Uzak (${dc.toFixed(1)}%)`,val:1});}
-  let label,color;
-  if(score>=5){label="▲ GÜÇLÜ LONG";color=T.green;}
-  else if(score>=2){label="▲ ZAYIF LONG";color="#58c76e";}
-  else if(score<=-5){label="▼ GÜÇLÜ SHORT";color=T.red;}
-  else if(score<=-2){label="▼ ZAYIF SHORT";color=T.orange;}
-  else{label="— NÖTR / BEKLE";color=T.muted;}
-  return{score,label,color,items};
+function buildIVOIData(d) {
+  const{spot,call_walls:cw=[],put_walls:pw=[]}=d;
+  const lo=Math.ceil((spot*0.8)/1000)*1000,hi=Math.ceil((spot*1.2)/1000)*1000;const rows=[];
+  for(let s=hi;s>=lo;s-=1000){const dist=Math.abs(s-spot)/spot,base=Math.max(5,280*Math.exp(-dist*9));rows.push({label:`${(s/1000).toFixed(0)}K`,calls:Math.round(base*(cw.includes(s)?3.8:s>spot?1.1:0.45)),puts:Math.round(base*(pw.includes(s)?3.8:s<spot?1.1:0.45))});}
+  return rows;
 }
 
-// ── UI ATOMS ──────────────────────────────────────────────────────
-const Card=({children,style={},borderColor})=>(
-  <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:8,padding:"14px 16px",borderTop:borderColor?`3px solid ${borderColor}`:undefined,...style}}>{children}</div>
-);
-const ST=({children})=>(
-  <div style={{color:T.muted,fontSize:10.5,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:10,fontWeight:600}}>{children}</div>
-);
-const KV=({label,value,color,highlight})=>(
-  <div style={{padding:"9px 11px",borderRadius:6,background:highlight?`${color||T.blue}14`:T.card2,border:`1px solid ${highlight?(color||T.blue)+"60":T.border}`}}>
-    <div style={{color:T.muted,fontSize:10,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:3}}>{label}</div>
-    <div style={{color:color||T.text,fontSize:17,fontWeight:700,fontFamily:"monospace"}}>{value}</div>
-  </div>
-);
-const Chip=({label,value,color})=>(
-  <div style={{display:"flex",flexDirection:"column",alignItems:"center"}}>
-    <div style={{color:T.muted,fontSize:10,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:2}}>{label}</div>
-    <div style={{color:color||T.text,fontSize:13,fontWeight:600,fontFamily:"monospace"}}>{value}</div>
-  </div>
-);
-const QCard=({score,category,desc})=>{
-  const c=scoreColor(score);const bg=score>=4?"#0d2c12":score>=3?"#2c2000":score<=1?"#2c0a08":"#1c1c00";
-  return(<div style={{flex:1,background:bg,border:`1px solid ${c}40`,borderTop:`3px solid ${c}`,borderRadius:8,padding:"20px 18px",textAlign:"center"}}>
-    <div style={{fontSize:64,fontWeight:900,color:c,lineHeight:1,marginBottom:4}}>{score}</div>
-    <div style={{fontSize:15,color:c,fontWeight:700,marginBottom:6}}>{scoreLabel(score)}</div>
-    <div style={{fontSize:10.5,color:T.muted,letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:10,fontWeight:600}}>{category}</div>
-    <div style={{fontSize:11.5,color:T.text,lineHeight:1.55,opacity:0.9}}>{desc}</div>
-  </div>);
+// ── Regime Config ─────────────────────────────────────────────────
+const REGIME = {
+  IDEAL_LONG:      {label:"İDEAL LONG",     color:C.green,  bg:C.greenDim},
+  BULLISH_HIGH_VOL:{label:"BULLISH HIGH VOL",color:C.gold,   bg:"#3d2800"},
+  BEARISH_VOLATILE:{label:"BEARISH VOLATİL", color:C.red,    bg:C.redDim},
+  BEARISH_LOW_VOL: {label:"BEARISH SIKIŞ",   color:C.orange, bg:"#3d1800"},
+  HIGH_RISK:       {label:"⚠ YÜKSEK RİSK",  color:C.red,    bg:C.redDim},
+  NEUTRAL:         {label:"NÖTR / BEKLE",    color:C.muted,  bg:C.card2},
 };
 
-function TeknikSignal({optData, onConfluence}){
-  const[t4,setT4]=useState(null);const[t1,setT1]=useState(null);
-  const[loading,setLoading]=useState(true);const[error,setError]=useState(null);
-  const[lastUpdate,setLastUpdate]=useState(null);const[tab,setTab]=useState("4h");
-  const load=useCallback(async()=>{
-    setLoading(true);setError(null);
-    const[c4,c1]=await Promise.all([fetchOHLCV("4h",120),fetchOHLCV("1h",100)]);
-    if(!c4&&!c1){setError("Binance API erişilemiyor");setLoading(false);return;}
-    if(c4)setT4(analyzeCandles(c4));if(c1)setT1(analyzeCandles(c1));
-    setLastUpdate(new Date().toLocaleTimeString("tr-TR"));setLoading(false);
-  },[]);
-  useEffect(()=>{load();const id=setInterval(load,5*60*1000);return()=>clearInterval(id);},[load]);
-  const conf=confluenceScore(t4,t1,optData);const current=tab==="4h"?t4:t1;
-  useEffect(()=>{if(conf&&onConfluence)onConfluence(conf);},[conf?.score]);
-  const GB=({value,color,max=10})=>{const p=Math.min(100,Math.max(0,((value+max)/(max*2))*100));return(<div style={{height:6,background:T.card2,borderRadius:99,overflow:"hidden",marginTop:4}}><div style={{height:"100%",width:`${p}%`,background:color,borderRadius:99}}/></div>);};
+// ── UI Atoms ──────────────────────────────────────────────────────
+const Panel = ({children, style={}, accent}) => (
+  <div style={{
+    background:C.card, border:`1px solid ${C.border}`,
+    borderRadius:10, padding:"14px 16px",
+    borderTop: accent ? `2px solid ${accent}` : undefined,
+    ...style
+  }}>{children}</div>
+);
+
+const Label = ({children, style={}}) => (
+  <div style={{color:C.muted,fontSize:9.5,letterSpacing:"0.1em",textTransform:"uppercase",fontWeight:600,marginBottom:8,...style}}>{children}</div>
+);
+
+const Metric = ({label, value, color, sub, big}) => (
+  <div style={{display:"flex",flexDirection:"column",gap:2}}>
+    <div style={{color:C.muted,fontSize:9,textTransform:"uppercase",letterSpacing:"0.08em"}}>{label}</div>
+    <div style={{color:color||C.text,fontSize:big?22:15,fontWeight:700,fontFamily:"'JetBrains Mono','Fira Code',monospace",lineHeight:1}}>{value}</div>
+    {sub&&<div style={{color:C.muted,fontSize:9}}>{sub}</div>}
+  </div>
+);
+
+const Tag = ({children, color}) => (
+  <span style={{background:`${color}20`,border:`1px solid ${color}50`,color,borderRadius:4,padding:"2px 7px",fontSize:10,fontWeight:600}}>{children}</span>
+);
+
+const ScoreBar = ({score, max=5, color}) => {
+  const p = clamp(((score+max)/(max*2))*100,0,100);
   return(
-    <Card borderColor={conf?conf.color:T.purple}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
-        <div>
-          <ST>⚡ Teknik Sinyal — BTC/USDT · Binance Canlı</ST>
-          {loading&&<div style={{color:T.muted,fontSize:11}}>⟳ Yükleniyor…</div>}
-          {error&&<div style={{color:T.red,fontSize:11}}>✗ {error}</div>}
-          {lastUpdate&&!loading&&<div style={{color:T.muted,fontSize:10}}>Son güncelleme: {lastUpdate}</div>}
+    <div style={{height:5,background:C.dim,borderRadius:99,overflow:"hidden"}}>
+      <div style={{height:"100%",width:`${p}%`,background:color,borderRadius:99,transition:"width 0.6s ease"}}/>
+    </div>
+  );
+};
+
+// ── TeknikSignal ──────────────────────────────────────────────────
+function TeknikSignal({optData, onConfluence}) {
+  const [t4,setT4]=useState(null);
+  const [t1,setT1]=useState(null);
+  const [loading,setLoading]=useState(true);
+  const [lastUpdate,setLastUpdate]=useState(null);
+  const [tab,setTab]=useState("4h");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const [c4,c1] = await Promise.all([fetchOHLCV("4h",120),fetchOHLCV("1h",100)]);
+    if(c4) setT4(analyzeCandles(c4));
+    if(c1) setT1(analyzeCandles(c1));
+    setLastUpdate(new Date().toLocaleTimeString("tr-TR"));
+    setLoading(false);
+  },[]);
+
+  useEffect(()=>{load();const id=setInterval(load,5*60*1000);return()=>clearInterval(id);},[load]);
+
+  const conf = confluenceScore(t4,t1,optData);
+  useEffect(()=>{if(conf&&onConfluence)onConfluence(conf);},[conf?.score]);
+
+  const current = tab==="4h" ? t4 : t1;
+
+  return(
+    <Panel accent={conf?.color}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <Label style={{marginBottom:0}}>Teknik Sinyal — BTC/USDT Binance Canlı</Label>
+          {loading && <span style={{color:C.muted,fontSize:10}}>yükleniyor...</span>}
+          {lastUpdate && !loading && <span style={{color:C.muted,fontSize:9}}>güncelleme: {lastUpdate}</span>}
         </div>
-        <button onClick={load} disabled={loading} style={{background:"transparent",border:`1px solid ${T.border}`,color:T.muted,padding:"3px 10px",borderRadius:4,cursor:"pointer",fontSize:10}}>⟳ Yenile</button>
+        <button onClick={load} disabled={loading} style={{background:"transparent",border:`1px solid ${C.border}`,color:C.muted,padding:"3px 10px",borderRadius:4,cursor:"pointer",fontSize:10}}>↺</button>
       </div>
-      {!loading&&conf&&(
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
-          <div style={{background:`${conf.color}0e`,border:`1px solid ${conf.color}40`,borderTop:`3px solid ${conf.color}`,borderRadius:8,padding:"14px 16px"}}>
-            <div style={{color:T.muted,fontSize:9.5,textTransform:"uppercase",marginBottom:6}}>Konfluens Skoru</div>
-            <div style={{fontSize:32,fontWeight:900,color:conf.color,lineHeight:1,marginBottom:4}}>{conf.score>0?"+":""}{conf.score}</div>
-            <div style={{fontSize:16,fontWeight:800,color:conf.color,marginBottom:10}}>{conf.label}</div>
-            <GB value={conf.score} color={conf.color} max={10}/>
-            <div style={{display:"flex",flexDirection:"column",gap:4,marginTop:12}}>
-              {conf.items.map((it,i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:10,padding:"2px 0",borderBottom:`1px solid ${T.border}`}}><span style={{color:T.muted}}>{it.src}</span><span style={{color:it.val>0?T.green:it.val<0?T.red:T.muted,fontWeight:700}}>{it.val>0?"+":""}{it.val}</span></div>))}
+      {!loading && conf && (
+        <div style={{display:"grid",gridTemplateColumns:"200px 1fr",gap:14}}>
+          {/* Konfluens Kutusu */}
+          <div style={{background:`${conf.color}0a`,border:`1px solid ${conf.color}30`,borderRadius:8,padding:"14px"}}>
+            <div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:6}}>Konfluens</div>
+            <div style={{color:conf.color,fontSize:38,fontWeight:900,lineHeight:1,fontFamily:"monospace"}}>{conf.score>0?"+":""}{conf.score}</div>
+            <div style={{color:conf.color,fontSize:13,fontWeight:700,marginBottom:8}}>{conf.label}</div>
+            <ScoreBar score={conf.score} max={8} color={conf.color}/>
+            <div style={{display:"flex",flexDirection:"column",gap:3,marginTop:10}}>
+              {conf.items.map((it,i)=>(
+                <div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:9.5,padding:"2px 0",borderBottom:`1px solid ${C.border}`}}>
+                  <span style={{color:C.muted}}>{it.src}</span>
+                  <span style={{color:it.val>0?C.green:it.val<0?C.red:C.muted,fontWeight:700}}>{it.val>0?"+":""}{it.val}</span>
+                </div>
+              ))}
             </div>
           </div>
-          <div style={{gridColumn:"2 / 4",display:"flex",flexDirection:"column",gap:10}}>
+          {/* Sağ Panel */}
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
             <div style={{display:"flex",gap:6}}>
-              {["4h","1h"].map(tf=>(<button key={tf} onClick={()=>setTab(tf)} style={{background:tab===tf?`${T.purple}30`:"transparent",border:`1px solid ${tab===tf?T.purple:T.border}`,color:tab===tf?T.purple:T.muted,padding:"3px 16px",borderRadius:4,cursor:"pointer",fontFamily:"monospace",fontSize:11}}>{tf.toUpperCase()} {tf==="4h"?t4?.signal_label:t1?.signal_label}</button>))}
+              {["4h","1h"].map(tf=>{
+                const sig = tf==="4h"?t4:t1;
+                return(<button key={tf} onClick={()=>setTab(tf)} style={{background:tab===tf?`${sig?.signal_color||C.blue}15`:"transparent",border:`1px solid ${tab===tf?sig?.signal_color||C.blue:C.border}`,color:tab===tf?sig?.signal_color||C.blue:C.muted,padding:"4px 14px",borderRadius:4,cursor:"pointer",fontSize:10.5,fontFamily:"monospace"}}>
+                  {tf.toUpperCase()} {sig?`${sig.signal_label}`:"—"}
+                </button>);
+              })}
             </div>
-            {current&&(<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-              <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                {[{label:"EMA 9",val:current.ema9?.toFixed(0),color:current.ema9>current.ema21?T.green:T.red},{label:"EMA 21",val:current.ema21?.toFixed(0),color:T.muted},{label:"RSI 14",val:current.rsi?.toFixed(1),color:current.rsi>70?T.red:current.rsi<30?T.green:current.rsi>50?"#58c76e":T.orange},{label:"MACD",val:current.macdV?.toFixed(1),color:current.macdV>current.sigV?T.green:T.red},{label:"Signal",val:current.sigV?.toFixed(1),color:T.muted},{label:"Hist",val:current.histV>0?`+${current.histV.toFixed(1)}`:current.histV?.toFixed(1),color:current.histV>0?T.green:T.red},...(current.bb?[{label:"BB Üst",val:current.bb.upper?.toFixed(0),color:T.muted},{label:"BB Orta",val:current.bb.middle?.toFixed(0),color:T.muted},{label:"BB Alt",val:current.bb.lower?.toFixed(0),color:T.muted}]:[])].map((row,i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 8px",background:T.card2,border:`1px solid ${T.border}`,borderRadius:4}}><span style={{color:T.muted,fontSize:10,textTransform:"uppercase"}}>{row.label}</span><span style={{color:row.color,fontWeight:700,fontFamily:"monospace",fontSize:11}}>{row.val}</span></div>))}
-              </div>
-              <div style={{display:"flex",flexDirection:"column",gap:4}}>
-                <div style={{color:T.muted,fontSize:9.5,textTransform:"uppercase",marginBottom:2}}>Sinyal Gerekçeleri</div>
-                {current.reasons.map((r,i)=>(<div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 8px",borderRadius:4,background:r.bull===true?"#0d2c1228":r.bull===false?"#2c0a0828":`${T.border}20`}}><span style={{fontSize:10,color:r.bull===true?T.green:r.bull===false?T.red:T.muted}}>{r.bull===true?"▲":r.bull===false?"▼":"●"}</span><span style={{fontSize:10.5,color:r.strong?T.text:T.muted}}>{r.txt}</span></div>))}
-                <div style={{marginTop:8,padding:"8px 10px",background:`${current.signal_color}12`,border:`1px solid ${current.signal_color}40`,borderRadius:6}}>
-                  <div style={{color:T.muted,fontSize:9.5,textTransform:"uppercase",marginBottom:3}}>{tab.toUpperCase()} Sinyal</div>
-                  <div style={{color:current.signal_color,fontWeight:900,fontSize:20}}>{current.signal_label}</div>
-                  <GB value={current.score} color={current.signal_color} max={4}/>
+            {current && (
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                  {[
+                    {l:"EMA 9",v:current.ema9?.toFixed(0),c:current.ema9>current.ema21?C.green:C.red},
+                    {l:"EMA 21",v:current.ema21?.toFixed(0),c:C.muted},
+                    {l:"RSI 14",v:current.rsi?.toFixed(1),c:current.rsi>70?C.red:current.rsi<30?C.green:current.rsi>50?"#44e8a0":C.orange},
+                    {l:"MACD",v:current.macdV?.toFixed(1),c:current.macdV>current.sigV?C.green:C.red},
+                    {l:"Hist",v:current.histV>0?`+${current.histV?.toFixed(1)}`:current.histV?.toFixed(1),c:current.histV>0?C.green:C.red},
+                    ...(current.bb?[{l:"BB %",v:current.bb?((current.price-current.bb.lower)/(current.bb.upper-current.bb.lower)*100).toFixed(0)+"%":"-",c:C.blue}]:[]),
+                  ].map((row,i)=>(
+                    <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 8px",background:C.card2,border:`1px solid ${C.border}`,borderRadius:4}}>
+                      <span style={{color:C.muted,fontSize:9.5,textTransform:"uppercase"}}>{row.l}</span>
+                      <span style={{color:row.c,fontWeight:700,fontFamily:"monospace",fontSize:11}}>{row.v}</span>
+                    </div>
+                  ))}
+                </div>
+                <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                  <div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:2}}>Gerekçeler</div>
+                  {current.reasons.map((r,i)=>(
+                    <div key={i} style={{display:"flex",alignItems:"center",gap:6,padding:"3px 7px",borderRadius:4,background:r.bull===true?`${C.green}10`:r.bull===false?`${C.red}10`:`${C.border}20`}}>
+                      <span style={{fontSize:9,color:r.bull===true?C.green:r.bull===false?C.red:C.muted}}>{r.bull===true?"▲":r.bull===false?"▼":"●"}</span>
+                      <span style={{fontSize:10,color:r.strong?C.text:C.muted}}>{r.txt}</span>
+                    </div>
+                  ))}
+                  <div style={{marginTop:6,padding:"8px",background:`${current.signal_color}10`,border:`1px solid ${current.signal_color}30`,borderRadius:6}}>
+                    <div style={{color:C.muted,fontSize:9,marginBottom:2}}>{tab.toUpperCase()} Sinyal</div>
+                    <div style={{color:current.signal_color,fontWeight:900,fontSize:18}}>{current.score>0?"▲":current.score<0?"▼":"—"} {current.signal_label}</div>
+                    <ScoreBar score={current.score} max={4} color={current.signal_color}/>
+                  </div>
                 </div>
               </div>
-            </div>)}
+            )}
           </div>
         </div>
       )}
-    </Card>
+    </Panel>
   );
 }
 
-function buildGEXData(d){
-  const nm={};[...(d.pos_gex_nodes||[]),...(d.neg_gex_nodes||[])].forEach(n=>{nm[n.strike]=n.net_gex;});
-  const spot=d.spot,lo=Math.ceil((spot*0.72)/1000)*1000,hi=Math.ceil((spot*1.28)/1000)*1000;
-  const rows=[];
-  for(let s=hi;s>=lo;s-=1000){const k=nm[s];let gex=k!==undefined?k:(s<spot?-6*Math.exp(-Math.abs((s-spot)/spot)*6):5*Math.exp(-Math.abs((s-spot)/spot)*7));rows.push({strike:s,label:`${(s/1000).toFixed(0)}K`,gex:Math.round(gex*10)/10});}
-  return rows;
+// ── Smart Notes Panel ─────────────────────────────────────────────
+function NotesPanel({notes}) {
+  if(!notes||!notes.length) return null;
+  const colors = {bull:C.green, bear:C.red, warn:C.gold, info:C.blue};
+  return(
+    <Panel>
+      <Label>Akıllı Notlar — Sistem Yorumları</Label>
+      <div style={{display:"flex",flexDirection:"column",gap:6}}>
+        {notes.map((n,i)=>{
+          const color = colors[n.type]||C.muted;
+          return(
+            <div key={i} style={{display:"flex",gap:10,padding:"8px 12px",background:`${color}08`,border:`1px solid ${color}25`,borderLeft:`3px solid ${color}`,borderRadius:6}}>
+              <span style={{color,fontSize:14,flexShrink:0}}>{n.icon}</span>
+              <span style={{color:C.text,fontSize:11.5,lineHeight:1.5}}>{n.text}</span>
+            </div>
+          );
+        })}
+      </div>
+    </Panel>
+  );
 }
-function buildIVOIData(d){
-  const{spot,call_walls=[],put_walls=[]}=d;
-  const lo=Math.ceil((spot*0.78)/1000)*1000,hi=Math.ceil((spot*1.22)/1000)*1000;const rows=[];
-  for(let s=hi;s>=lo;s-=1000){const dist=Math.abs(s-spot)/spot,base=Math.max(5,280*Math.exp(-dist*9));rows.push({label:`${(s/1000).toFixed(0)}K`,calls:Math.round(base*(call_walls.includes(s)?3.8:s>spot?1.1:0.45)),puts:Math.round(base*(put_walls.includes(s)?3.8:s<spot?1.1:0.45))});}
-  return rows;
-}
 
-const REGIME_INFO={IDEAL_LONG:{txt:"İDEAL LONG",color:T.green,sub:"GEX pozitif · opsiyonlar güçlü destek"},BULLISH_HIGH_VOL:{txt:"BULLISH HIGH VOL",color:T.gold,sub:"Long açılabilir, stop sıkı · vol yüksek"},BEARISH_VOLATILE:{txt:"BEARISH VOLATİL",color:T.red,sub:"Short setup · yüksek volatilite"},BEARISH_LOW_VOL:{txt:"BEARISH SIKIŞ",color:T.red,sub:"Short setup · düşük vol"},HIGH_RISK:{txt:"⚠ YÜKSEK RİSK",color:T.red,sub:"Short gamma + vol · kill-switch"},NEUTRAL:{txt:"NÖTR / BEKLE",color:T.muted,sub:"Net yön yok · bekleme modu"}};
+// ── Main App ──────────────────────────────────────────────────────
+export default function App() {
+  const [data,setData]     = useState(DEMO);
+  const [live,setLive]     = useState(false);
+  const [busy,setBusy]     = useState(false);
+  const [clock,setClock]   = useState("");
+  const [confScore,setConfScore] = useState(null);
+  const [riskStatus,setRiskStatus] = useState(null);
+  const [btResult,setBtResult]   = useState(null);
 
-export default function App(){
-  const[data,setData]=useState(DEMO);const[live,setLive]=useState(false);const[busy,setBusy]=useState(false);const[clock,setClock]=useState("");const[confScore,setConfScore]=useState(null);const[riskStatus,setRiskStatus]=useState(null);const[btResult,setBtResult]=useState(null);
-  const refresh=useCallback(async()=>{setBusy(true);const[d,bp]=await Promise.all([fetchLive(),fetchBinancePrice()]);if(d){setData(d);setLive(true);}else{setData(bp?{...DEMO,spot:bp}:DEMO);setLive(false);}setClock(new Date().toLocaleTimeString("tr-TR"));setBusy(false);},[]);
+  const refresh = useCallback(async () => {
+    setBusy(true);
+    const [d,bp] = await Promise.all([fetchLive(),fetchBinancePrice()]);
+    if(d){setData(d);setLive(true);}
+    else{setData(bp?{...DEMO,spot:bp}:DEMO);setLive(false);}
+    setClock(new Date().toLocaleTimeString("tr-TR"));
+    setBusy(false);
+  },[]);
 
-  // Auto-trade: koşullar sağlanınca journal'a otomatik kaydet
-  useEffect(()=>{
-    if(!data||data.spot<1000)return;
-    const regime=data.regime;
-    const bullish=["IDEAL_LONG","BULLISH_HIGH_VOL"].includes(regime);
-    const aboveHVL=data.spot>data.hvl;
-    const gexPos=data.total_net_gex>0;
-    if(!bullish||!aboveHVL||!gexPos)return;
-      const confOK=!confScore||(confScore&&confScore.score>=-10);
-      const ivOK=(data.iv_rank||0)<80;
-      if(!confOK||!ivOK)return;
-    // Bugün zaten trade var mı?
-    try{
-      const trades=JSON.parse(localStorage.getItem("gdive:journal:v2")||"[]");
-      const today=new Date().toISOString().slice(0,10);
-      const todayTrade=trades.find(t=>t.date&&t.date.startsWith(today)&&t.status==="OPEN");
-      if(todayTrade)return;
-      // Yeni trade ekle
-      const entry=data.spot;
-      const stop=data.put_support;
-      const tp=data.call_resistance;
-      const riskAmt=200; // $200 risk
-      const size=+(riskAmt/Math.abs(entry-stop)).toFixed(4);
-      const trade={
-        id:Date.now(),
-        date:new Date().toISOString().slice(0,16).replace("T"," "),
-        dir:"LONG",entry,stop,tp,size,
-        regime,
-        signal:`Auto · Konfluens · ${data.total_net_gex>0?"GEX+":"GEX-"} · ${regime}`,
-        notes:`Otomatik sinyal. Spot ${entry} > HVL ${data.hvl}. Net GEX: ${data.total_net_gex}M. IV: ${data.front_iv}%`,
-        status:"OPEN",pnl:null,rr:null,exitPrice:null,exitDate:null,
-      };
-      const next=[trade,...trades];
-      localStorage.setItem("gdive:journal:v2",JSON.stringify(next));
-      alert("G-DIVE Auto Trade - LONG @ $" + entry + " Stop: $" + stop + " TP: $" + tp);
-    }catch(e){console.error("autotrade err",e);}
-  },[data,confScore]);
   useEffect(()=>{refresh();const id=setInterval(refresh,4*60*1000);return()=>clearInterval(id);},[refresh]);
-  useEffect(()=>{try{const t=JSON.parse(localStorage.getItem("gdive:journal:v2")||"[]");setRiskStatus(getRiskStatus(t));}catch(e){}},[data]);
-  useEffect(()=>{fetchOHLCV("4h",500).then(candles=>{if(candles){const r=runBacktest(candles);setBtResult(r);}});},[]);
 
   useEffect(()=>{
-    if(!data||data.spot<1000)return;
+    try{const t=JSON.parse(localStorage.getItem("gdive:journal:v2")||"[]");setRiskStatus(getRiskStatus(t));}catch(e){}
+  },[data]);
+
+  useEffect(()=>{
+    fetchOHLCV("4h",500).then(candles=>{if(candles){setBtResult(runBacktest(candles));}});
+  },[]);
+
+  // Position Management
+  useEffect(()=>{
+    if(!data||data._source==="demo") return;
     try{
       const JKEY="gdive:journal:v2";
       const trades=JSON.parse(localStorage.getItem(JKEY)||"[]");
-      const spot=data.spot;
+      const spot=data.spot,regime=data.regime;
+      const bullish=["IDEAL_LONG","BULLISH_HIGH_VOL"].includes(regime)&&spot>data.hvl&&data.total_net_gex>0;
+      const bearish=["BEARISH_VOLATILE","BEARISH_LOW_VOL","HIGH_RISK"].includes(regime)&&spot<data.hvl&&data.total_net_gex<0;
       const rs=getRiskStatus(trades);setRiskStatus(rs);
-      if(rs.killSwitch){console.warn("Kill Switch aktif");return;}
-      const bullish=["IDEAL_LONG","BULLISH_HIGH_VOL"].includes(data.regime)&&spot>data.hvl&&data.total_net_gex>0;
-      const bearish=["BEARISH_VOLATILE","BEARISH_LOW_VOL","HIGH_RISK"].includes(data.regime)&&spot<data.hvl&&data.total_net_gex<0;
-      const confOK=confScore&&Math.abs(confScore.score)>=2;
-      const ivOK=(data.iv_rank||0)<75;
+      if(rs.killSwitch) return;
+      const confOK=!confScore||(confScore&&confScore.score>=-10);
+      const ivOK=(data.iv_rank||0)<80;
       let changed=false;
-
       const updated=trades.map(t=>{
-        if(t.status!=="OPEN")return t;
+        if(t.status!=="OPEN") return t;
+        const now=new Date().toISOString().slice(0,16).replace("T"," ");
         if(t.dir==="LONG"){
-          if(spot<=t.stop){
-            changed=true;
-            const pnl=+((t.stop-t.entry)*t.size).toFixed(2);
-            alert("STOP HIT - LONG kapandi @ $"+t.stop+" PnL: $"+pnl);
-            return{...t,status:"CLOSED",exitPrice:t.stop,exitDate:new Date().toISOString().slice(0,16).replace("T"," "),pnl,rr:-1,notes:(t.notes||"")+" | STOP"};
-          }
-          if(bearish){
-            changed=true;
-            const pnl=+((spot-t.entry)*t.size).toFixed(2);
-            const rr=+((spot-t.entry)/(t.entry-t.stop)).toFixed(2);
-            alert("REJIM SHORT - LONG kapandi @ $"+spot+" PnL: $"+pnl);
-            return{...t,status:"CLOSED",exitPrice:spot,exitDate:new Date().toISOString().slice(0,16).replace("T"," "),pnl,rr,notes:(t.notes||"")+" | Rejim SHORT"};
-          }
-          if(spot>=t.tp&&!t.partialClosed){
-            changed=true;
-            if(bullish){
-              const half=+(t.size/2).toFixed(4);
-              const halfPnl=+((t.tp-t.entry)*half).toFixed(2);
-              const nTP=data.call_walls&&data.call_walls.find(w=>w>t.tp)||t.tp*1.03;
-              alert("TP %50 HIT @ $"+t.tp+" PnL: $"+halfPnl+" - Kalan devam, yeni TP: $"+nTP);
-              return{...t,size:half,partialClosed:true,partialPnl:halfPnl,tp:nTP,notes:(t.notes||"")+" | %50 @ $"+t.tp};
-            } else {
-              const pnl=+((t.tp-t.entry)*t.size).toFixed(2);
-              const rr=+((t.tp-t.entry)/(t.entry-t.stop)).toFixed(2);
-              alert("TP %100 HIT @ $"+t.tp+" PnL: $"+pnl);
-              return{...t,status:"CLOSED",exitPrice:t.tp,exitDate:new Date().toISOString().slice(0,16).replace("T"," "),pnl,rr,notes:(t.notes||"")+" | TP"};
-            }
-          }
+          if(spot<=t.stop){changed=true;const pnl=+((t.stop-t.entry)*t.size).toFixed(2);alert("STOP HIT LONG @ $"+t.stop+" PnL:$"+pnl);return{...t,status:"CLOSED",exitPrice:t.stop,exitDate:now,pnl,rr:-1,notes:(t.notes||"")+" | STOP"};}
+          if(bearish){changed=true;const pnl=+((spot-t.entry)*t.size).toFixed(2);const rr=+((spot-t.entry)/(t.entry-t.stop)).toFixed(2);alert("REJIM SHORT - LONG kapandi @ $"+spot);return{...t,status:"CLOSED",exitPrice:spot,exitDate:now,pnl,rr,notes:(t.notes||"")+" | Rejim SHORT"};}
+          if(spot>=t.tp&&!t.partialClosed){changed=true;if(bullish){const half=+(t.size/2).toFixed(4);const nTP=data.call_walls&&data.call_walls.find(w=>w>t.tp)||t.tp*1.03;alert("TP 50% LONG @ $"+t.tp);return{...t,size:half,partialClosed:true,tp:nTP,notes:(t.notes||"")+" | 50% @"+t.tp};}else{const pnl=+((t.tp-t.entry)*t.size).toFixed(2);const rr=+((t.tp-t.entry)/(t.entry-t.stop)).toFixed(2);alert("TP 100% LONG @ $"+t.tp+" PnL:$"+pnl);return{...t,status:"CLOSED",exitPrice:t.tp,exitDate:now,pnl,rr,notes:(t.notes||"")+" | TP"};}}
         }
         if(t.dir==="SHORT"){
-          if(spot>=t.stop){
-            changed=true;
-            const pnl=+((t.entry-t.stop)*t.size).toFixed(2);
-            alert("STOP HIT - SHORT kapandi @ $"+t.stop+" PnL: $"+pnl);
-            return{...t,status:"CLOSED",exitPrice:t.stop,exitDate:new Date().toISOString().slice(0,16).replace("T"," "),pnl,rr:-1,notes:(t.notes||"")+" | STOP"};
-          }
-          if(bullish){
-            changed=true;
-            const pnl=+((t.entry-spot)*t.size).toFixed(2);
-            const rr=+((t.entry-spot)/(t.stop-t.entry)).toFixed(2);
-            alert("REJIM LONG - SHORT kapandi @ $"+spot+" PnL: $"+pnl);
-            return{...t,status:"CLOSED",exitPrice:spot,exitDate:new Date().toISOString().slice(0,16).replace("T"," "),pnl,rr,notes:(t.notes||"")+" | Rejim LONG"};
-          }
-          if(spot<=t.tp&&!t.partialClosed){
-            changed=true;
-            if(bearish){
-              const half=+(t.size/2).toFixed(4);
-              const halfPnl=+((t.entry-t.tp)*half).toFixed(2);
-              const nTP=data.put_walls&&data.put_walls.slice().sort((a,b)=>b-a).find(w=>w<t.tp)||t.tp*0.97;
-              alert("TP %50 HIT @ $"+t.tp+" PnL: $"+halfPnl+" - Kalan devam, yeni TP: $"+nTP);
-              return{...t,size:half,partialClosed:true,partialPnl:halfPnl,tp:nTP,notes:(t.notes||"")+" | %50 @ $"+t.tp};
-            } else {
-              const pnl=+((t.entry-t.tp)*t.size).toFixed(2);
-              const rr=+((t.entry-t.tp)/(t.stop-t.entry)).toFixed(2);
-              alert("TP %100 HIT @ $"+t.tp+" PnL: $"+pnl);
-              return{...t,status:"CLOSED",exitPrice:t.tp,exitDate:new Date().toISOString().slice(0,16).replace("T"," "),pnl,rr,notes:(t.notes||"")+" | TP"};
-            }
-          }
+          if(spot>=t.stop){changed=true;const pnl=+((t.entry-t.stop)*t.size).toFixed(2);alert("STOP HIT SHORT @ $"+t.stop+" PnL:$"+pnl);return{...t,status:"CLOSED",exitPrice:t.stop,exitDate:now,pnl,rr:-1,notes:(t.notes||"")+" | STOP"};}
+          if(bullish){changed=true;const pnl=+((t.entry-spot)*t.size).toFixed(2);const rr=+((t.entry-spot)/(t.stop-t.entry)).toFixed(2);alert("REJIM LONG - SHORT kapandi @ $"+spot);return{...t,status:"CLOSED",exitPrice:spot,exitDate:now,pnl,rr,notes:(t.notes||"")+" | Rejim LONG"};}
+          if(spot<=t.tp&&!t.partialClosed){changed=true;if(bearish){const half=+(t.size/2).toFixed(4);const nTP=data.put_walls&&data.put_walls.slice().sort((a,b)=>b-a).find(w=>w<t.tp)||t.tp*0.97;alert("TP 50% SHORT @ $"+t.tp);return{...t,size:half,partialClosed:true,tp:nTP,notes:(t.notes||"")+" | 50% @"+t.tp};}else{const pnl=+((t.entry-t.tp)*t.size).toFixed(2);const rr=+((t.entry-t.tp)/(t.stop-t.entry)).toFixed(2);alert("TP 100% SHORT @ $"+t.tp+" PnL:$"+pnl);return{...t,status:"CLOSED",exitPrice:t.tp,exitDate:now,pnl,rr,notes:(t.notes||"")+" | TP"};}}
         }
         return t;
       });
-
-      if(changed)localStorage.setItem(JKEY,JSON.stringify(updated));
-
+      if(changed) localStorage.setItem(JKEY,JSON.stringify(updated));
       const today=new Date().toISOString().slice(0,10);
-      const hasOpen=updated.find(t=>t.date&&t.date.startsWith(today)&&t.status==="OPEN");
+      const hasOpen=updated.find(t=>t.date?.startsWith(today)&&t.status==="OPEN");
       if(!hasOpen&&confOK&&ivOK){
-        if(bullish){
-          const entry=spot,stop=data.put_support,tp=data.call_resistance;
-          const finalScalar=data.layer_budget&&data.layer_budget.final_scalar||1.0;const size=calcPositionSize(10000,0.02,entry,stop,finalScalar); // 2x leverage
-          const trade={id:Date.now(),date:new Date().toISOString().slice(0,16).replace("T"," "),dir:"LONG",entry,stop,tp,size,regime:data.regime,signal:"Auto·L·Konf"+confScore.score,notes:"Auto LONG. GEX:"+data.total_net_gex+"M IV:"+data.front_iv+"%",status:"OPEN",pnl:null,rr:null,exitPrice:null,exitDate:null,partialClosed:false};
-          localStorage.setItem(JKEY,JSON.stringify([trade,...updated]));
-          alert("AUTO LONG @ $"+entry+" Stop:$"+stop+" TP:$"+tp);
-        } else if(bearish){
-          const entry=spot,stop=data.call_resistance,tp=data.put_support;
-          const size=+(400/Math.abs(entry-stop)).toFixed(4); // 2x leverage
-          const trade={id:Date.now(),date:new Date().toISOString().slice(0,16).replace("T"," "),dir:"SHORT",entry,stop,tp,size,regime:data.regime,signal:"Auto·S·Konf"+confScore.score,notes:"Auto SHORT. GEX:"+data.total_net_gex+"M IV:"+data.front_iv+"%",status:"OPEN",pnl:null,rr:null,exitPrice:null,exitDate:null,partialClosed:false};
-          localStorage.setItem(JKEY,JSON.stringify([trade,...updated]));
-          alert("AUTO SHORT @ $"+entry+" Stop:$"+stop+" TP:$"+tp);
-        }
+        const finalScalar=data.layer_budget?.final_scalar||1.0;
+        const risk=10000*0.02*2*finalScalar;
+        if(bullish){const entry=spot,stop=data.put_support,tp=data.call_resistance,size=+(risk/Math.abs(entry-stop)).toFixed(4);const trade={id:Date.now(),date:new Date().toISOString().slice(0,16).replace("T"," "),dir:"LONG",entry,stop,tp,size,regime,signal:"Auto·L·"+regime,notes:"Auto LONG. GEX:"+data.total_net_gex+"M scalar:"+finalScalar,status:"OPEN",pnl:null,rr:null,exitPrice:null,exitDate:null,partialClosed:false};localStorage.setItem(JKEY,JSON.stringify([trade,...updated]));alert("AUTO LONG @ $"+entry+" Stop:$"+stop+" TP:$"+tp);}
+        else if(bearish){const entry=spot,stop=data.call_resistance,tp=data.put_support,size=+(risk/Math.abs(entry-stop)).toFixed(4);const trade={id:Date.now(),date:new Date().toISOString().slice(0,16).replace("T"," "),dir:"SHORT",entry,stop,tp,size,regime,signal:"Auto·S·"+regime,notes:"Auto SHORT. GEX:"+data.total_net_gex+"M scalar:"+finalScalar,status:"OPEN",pnl:null,rr:null,exitPrice:null,exitDate:null,partialClosed:false};localStorage.setItem(JKEY,JSON.stringify([trade,...updated]));alert("AUTO SHORT @ $"+entry+" Stop:$"+stop+" TP:$"+tp);}
       }
     }catch(e){console.error("posmgmt",e);}
   },[data,confScore]);
-  const d=data,gammaPos=d.total_net_gex>0;
-  const gexRows=buildGEXData(d),ivoiRows=buildIVOIData(d);
-  const regime=REGIME_INFO[d.regime]||REGIME_INFO.NEUTRAL;
+
+  const d=data;
+  const gp=d.total_net_gex>0;
+  const gexRows=buildGEXData(d);
+  const ivoiRows=buildIVOIData(d);
+  const regime=REGIME[d.regime]||REGIME.NEUTRAL;
   const expMove=((d.front_iv||50)/19.1).toFixed(2);
   const distHVL=(Math.abs(d.spot-d.hvl)/d.spot*100).toFixed(2);
+  const notes=generateNotes(d,confScore,btResult);
+  const mq=d.menthorq;
+  const lb=d.layer_budget;
+  const ma=d.multi_asset;
+
+  const headerItems = [
+    {l:"P/C OI",    v:d.pc_ratio?.toFixed(2),         c:d.pc_ratio>1.2?C.green:d.pc_ratio<0.7?C.red:C.text},
+    {l:"Gamma",     v:gp?"Positive":"Negative",        c:gp?C.green:C.red},
+    {l:"IV 30D",    v:pct(d.front_iv),                 c:d.front_iv>70?C.red:d.front_iv>45?C.gold:C.green},
+    {l:"HV 30D",    v:pct(d.hv_30d||68),               c:C.muted},
+    {l:"IV Rank",   v:pct(d.iv_rank),                  c:d.iv_rank>70?C.red:d.iv_rank>40?C.gold:C.green},
+    {l:"Exp.Move",  v:`±${expMove}%`,                  c:C.purple},
+    {l:"Net GEX",   v:`${gp?"+":""}${d.total_net_gex?.toFixed(0)}M`, c:gp?C.green:C.orange},
+    {l:"MQ Scalar", v:lb?.final_scalar?.toFixed(3)+"×", c:lb?.final_scalar>=1.02?C.green:lb?.final_scalar<=0.97?C.red:C.gold},
+  ];
+
   return(
-    <div style={{background:T.bg,minHeight:"100vh",color:T.text,fontFamily:"'Fira Code','JetBrains Mono',monospace",fontSize:13}}>
-      <div style={{background:"#010409",borderBottom:`1px solid ${T.border}`,padding:"9px 20px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-        <div style={{display:"flex",alignItems:"center",gap:18}}>
-          <span style={{color:T.gold,fontWeight:900,fontSize:14}}>◆ G-DIVE OIM</span>
-          <span style={{color:T.muted,fontSize:11}}>BTC / USD · Deribit · Options Intelligence Module</span>
+    <div style={{background:C.bg,minHeight:"100vh",color:C.text,fontFamily:"'JetBrains Mono','Fira Code',monospace",fontSize:12.5}}>
+
+      {/* Top Bar */}
+      <div style={{background:"#060810",borderBottom:`1px solid ${C.border}`,padding:"10px 20px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div style={{display:"flex",alignItems:"center",gap:16}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <div style={{width:8,height:8,borderRadius:"50%",background:live?C.green:C.gold,boxShadow:`0 0 8px ${live?C.green:C.gold}`}}/>
+            <span style={{color:C.gold,fontWeight:900,fontSize:13,letterSpacing:"0.05em"}}>G-DIVE V4</span>
+          </div>
+          <span style={{color:C.dim,fontSize:10}}>|</span>
+          <span style={{color:C.muted,fontSize:10}}>BTC Options Intelligence · Deribit</span>
+          {regime&&<Tag color={regime.color}>{regime.label}</Tag>}
         </div>
-        <div style={{display:"flex",alignItems:"center",gap:14}}>
-          <span style={{fontSize:11,color:live?T.green:T.gold}}>{busy?"⟳ Yükleniyor…":live?`● CANLI · ${clock}`:`◆ DEMO · ${clock}`}</span>
-          <button onClick={refresh} disabled={busy} style={{background:"transparent",border:`1px solid ${T.border}`,color:T.muted,padding:"3px 12px",borderRadius:4,cursor:"pointer",fontSize:11}}>YENİLE</button>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <span style={{color:live?C.green:C.gold,fontSize:10}}>{busy?"⟳ Yükleniyor":live?`● CANLI ${clock}`:`◆ DEMO ${clock}`}</span>
+          <button onClick={refresh} disabled={busy} style={{background:`${C.border}`,border:`1px solid ${C.border2}`,color:C.muted,padding:"3px 12px",borderRadius:4,cursor:"pointer",fontSize:10}}>↺ Yenile</button>
         </div>
       </div>
-      <div style={{background:"#0a0d14",borderBottom:`1px solid ${T.border}`,padding:"10px 20px",display:"flex",alignItems:"center",gap:36,flexWrap:"wrap"}}>
-        <div><div style={{color:T.muted,fontSize:10}}>LAST PRICE</div><div style={{color:T.text,fontSize:24,fontWeight:900,lineHeight:1}}>{fmtK(d.spot)}</div></div>
-        <div style={{width:1,height:32,background:T.border}}/>
-        <Chip label="P/C OI" value={d.pc_ratio?.toFixed(2)}/>
-        <Chip label="Gamma" value={gammaPos?"Positive":"Negative"} color={gammaPos?T.green:T.red}/>
-        <Chip label="IV 30D" value={pct(d.front_iv)}/>
-        <Chip label="HV 30D" value={pct(d.hv_30d??67.97)} color={T.muted}/>
-        <Chip label="IV Rank" value={pct(d.iv_rank)} color={d.iv_rank>60?T.red:d.iv_rank>35?T.gold:T.green}/>
-        <Chip label="Exp.Move" value={`±${expMove}%`} color={T.purple}/>
-        <div style={{width:1,height:32,background:T.border}}/>
-        <Chip label="Net GEX" value={`$${gammaPos?"+":""}${d.total_net_gex?.toFixed(0)}M`} color={gammaPos?T.green:T.orange}/>
-      </div>
-      <div style={{padding:"16px 20px",display:"flex",flexDirection:"column",gap:14}}>
+
+      {/* Price Bar */}
+      <div style={{background:"#080c14",borderBottom:`1px solid ${C.border}`,padding:"10px 20px",display:"flex",alignItems:"center",gap:32,flexWrap:"wrap"}}>
         <div>
-          <ST>QSCORE — Composite Options Intelligence Signal</ST>
-          <div style={{display:"flex",gap:12}}>
-            <QCard score={d.option_score??0} category="Option" desc={`${scoreLabel(d.option_score)} — ${(d.option_score??0)>=3?"Bullish":"Bearish"} Option Positioning.`}/>
-            <QCard score={d.vol_score??0} category="Volatility" desc={`${scoreLabel(d.vol_score)} — ${(d.vol_score??0)>=4?"Volatile":(d.vol_score??0)>=2?"Moderate":"Low"} Volatility.`}/>
-            <QCard score={d.momentum_score??3} category="Momentum" desc={`${scoreLabel(d.momentum_score??3)} — ${(d.momentum_score??3)>=4?"Bullish":(d.momentum_score??3)>=3?"Neutral":"Bearish"} Momentum.`}/>
-          </div>
+          <div style={{color:C.muted,fontSize:9,letterSpacing:"0.1em"}}>BTC / USD</div>
+          <div style={{color:C.text,fontSize:28,fontWeight:900,lineHeight:1,fontFamily:"monospace"}}>{fmtK(d.spot)}</div>
         </div>
-        <TeknikSignal optData={d} onConfluence={setConfScore}/>
-        {d.menthorq&&(<Card bc={d.menthorq.scalar>=1.04?T.green:d.menthorq.scalar<=0.96?T.red:T.gold}>
-          <ST>MenthorQ Institutional Layer</ST>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:10}}>
-            {[{label:"Gamma Z",value:d.menthorq.gamma_z?.toFixed(3),color:d.menthorq.gamma_z>0.5?T.green:d.menthorq.gamma_z<-0.5?T.red:T.gold},{label:"Dealer Bias",value:d.menthorq.dealer_bias?.toFixed(3),color:d.menthorq.dealer_bias>0.2?T.green:d.menthorq.dealer_bias<-0.2?T.red:T.muted},{label:"Flow Score",value:d.menthorq.flow_score?.toFixed(3),color:d.menthorq.flow_score>0.2?T.green:d.menthorq.flow_score<-0.2?T.red:T.muted},{label:"MQ Score",value:d.menthorq.score?.toFixed(3),color:d.menthorq.score>0.2?T.green:d.menthorq.score<-0.2?T.red:T.gold}].map((s,i)=>(
-              <div key={i} style={{padding:"10px 12px",background:T.card2,border:"1px solid "+T.border,borderRadius:6}}>
-                <div style={{color:T.muted,fontSize:9.5,textTransform:"uppercase",marginBottom:3}}>{s.label}</div>
-                <div style={{color:s.color,fontWeight:900,fontSize:20,fontFamily:"monospace"}}>{s.value}</div>
+        <div style={{width:1,height:36,background:C.border}}/>
+        {headerItems.map((it,i)=>(
+          <div key={i} style={{display:"flex",flexDirection:"column",gap:1}}>
+            <div style={{color:C.muted,fontSize:8.5,textTransform:"uppercase",letterSpacing:"0.08em"}}>{it.l}</div>
+            <div style={{color:it.c,fontSize:12.5,fontWeight:700,fontFamily:"monospace"}}>{it.v}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Main Content */}
+      <div style={{padding:"14px 20px",display:"flex",flexDirection:"column",gap:12}}>
+
+        {/* Row 1: QScores */}
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10}}>
+          {[
+            {score:d.option_score??0,label:"Option Score",desc:d.option_score>=4?"Bullish Positioning":d.option_score>=3?"Nötr":"Bearish Positioning",color:d.option_score>=4?C.green:d.option_score>=3?C.gold:C.red},
+            {score:d.vol_score??0,label:"Vol Score",desc:d.vol_score>=4?"Yüksek Volatilite":d.vol_score>=3?"Orta":"Düşük Vol",color:d.vol_score>=4?C.orange:d.vol_score>=3?C.gold:C.green},
+            {score:d.momentum_score??3,label:"Momentum",desc:d.momentum_score>=4?"Bullish":d.momentum_score>=3?"Nötr":"Bearish",color:d.momentum_score>=4?C.green:d.momentum_score>=3?C.gold:C.red},
+          ].map((s,i)=>(
+            <div key={i} style={{background:C.card,border:`1px solid ${C.border}`,borderTop:`2px solid ${s.color}`,borderRadius:10,padding:"16px"}}>
+              <div style={{color:C.muted,fontSize:9,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:6}}>{s.label}</div>
+              <div style={{display:"flex",alignItems:"flex-end",gap:10,marginBottom:8}}>
+                <div style={{color:s.color,fontSize:52,fontWeight:900,lineHeight:1}}>{s.score}</div>
+                <div style={{color:s.color,fontSize:13,fontWeight:700,marginBottom:6}}>{s.desc}</div>
               </div>
-            ))}
+              <MiniBarChart value={s.score} max={5} color={s.color}/>
+            </div>
+          ))}
+        </div>
+
+        {/* Row 2: Smart Notes */}
+        <NotesPanel notes={notes}/>
+
+        {/* Row 3: Teknik Sinyal */}
+        <TeknikSignal optData={d} onConfluence={setConfScore}/>
+
+        {/* Row 4: MenthorQ + Multi-Asset */}
+        {mq && (
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            <Panel accent={mq.scalar>=1.04?C.green:mq.scalar<=0.96?C.red:C.gold}>
+              <Label>MenthorQ Institutional Layer</Label>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:8,marginBottom:10}}>
+                {[
+                  {l:"Gamma Z",v:mq.gamma_z?.toFixed(3),c:mq.gamma_z>0.5?C.green:mq.gamma_z<-0.5?C.red:C.gold},
+                  {l:"Dealer Bias",v:mq.dealer_bias?.toFixed(3),c:mq.dealer_bias>0.2?C.green:mq.dealer_bias<-0.2?C.red:C.muted},
+                  {l:"Flow Score",v:mq.flow_score?.toFixed(3),c:mq.flow_score>0.2?C.green:mq.flow_score<-0.2?C.red:C.muted},
+                  {l:"MQ Score",v:mq.score?.toFixed(3),c:mq.score>0.2?C.green:mq.score<-0.2?C.red:C.gold},
+                ].map((s,i)=>(
+                  <div key={i} style={{padding:"8px 10px",background:C.card2,border:`1px solid ${C.border}`,borderRadius:6}}>
+                    <div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:2}}>{s.l}</div>
+                    <div style={{color:s.c,fontWeight:900,fontSize:18,fontFamily:"monospace"}}>{s.v}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
+                {[
+                  {l:"MQ Scalar",v:mq.scalar?.toFixed(3)+"×",c:mq.scalar>=1.04?C.green:mq.scalar<=0.96?C.red:C.gold,sub:mq.regime},
+                  {l:"Funding",v:d.funding?.scalar?.toFixed(3)+"×",c:d.funding?.scalar>=1?C.green:C.orange,sub:d.funding?.regime},
+                  {l:"Final",v:lb?.final_scalar?.toFixed(3)+"×",c:lb?.final_scalar>=1.02?C.green:lb?.final_scalar<=0.97?C.red:C.gold,sub:"layer budget"},
+                ].map((s,i)=>(
+                  <div key={i} style={{padding:"8px 10px",background:C.card2,border:`1px solid ${C.border}`,borderRadius:6,textAlign:"center"}}>
+                    <div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:2}}>{s.l}</div>
+                    <div style={{color:s.c,fontWeight:900,fontSize:16,fontFamily:"monospace"}}>{s.v}</div>
+                    <div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginTop:1}}>{s.sub}</div>
+                  </div>
+                ))}
+              </div>
+            </Panel>
+
+            {ma && (
+              <Panel accent={C.purple}>
+                <Label>Multi-Asset Weights — BTC · GLD · TLT</Label>
+                <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                  {[
+                    {l:"BTC",v:ma.weights?.BTC||0,c:C.orange},
+                    {l:"GLD",v:ma.weights?.GLD||0,c:C.gold},
+                    {l:"TLT",v:ma.weights?.TLT||0,c:C.blue},
+                  ].map((a,i)=>(
+                    <div key={i}>
+                      <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
+                        <span style={{color:C.muted,fontSize:10}}>{a.l}</span>
+                        <span style={{color:a.c,fontWeight:700,fontSize:11,fontFamily:"monospace"}}>{(a.v*100).toFixed(1)}%</span>
+                      </div>
+                      <div style={{height:6,background:C.dim,borderRadius:99,overflow:"hidden"}}>
+                        <div style={{height:"100%",width:`${Math.abs(a.v)*100}%`,background:a.c,borderRadius:99,opacity:a.v<0?0.4:1}}/>
+                      </div>
+                    </div>
+                  ))}
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:4}}>
+                    <div style={{padding:"8px",background:C.card2,border:`1px solid ${C.border}`,borderRadius:6}}>
+                      <div style={{color:C.muted,fontSize:9,textTransform:"uppercase"}}>Realized Vol</div>
+                      <div style={{color:ma.realized_vol>0.6?C.red:ma.realized_vol>0.4?C.gold:C.green,fontWeight:700,fontSize:16,fontFamily:"monospace"}}>{((ma.realized_vol||0)*100).toFixed(1)}%</div>
+                    </div>
+                    <div style={{padding:"8px",background:C.card2,border:`1px solid ${C.border}`,borderRadius:6}}>
+                      <div style={{color:C.muted,fontSize:9,textTransform:"uppercase"}}>Posture</div>
+                      <div style={{color:ma.posture==="RISK_ON"?C.green:C.orange,fontWeight:700,fontSize:14}}>{ma.posture}</div>
+                    </div>
+                  </div>
+                </div>
+              </Panel>
+            )}
           </div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10}}>
-            <div style={{padding:"10px 12px",background:d.menthorq.scalar>=1.04?"#0d2c12":"#2c0a08",border:"1px solid "+(d.menthorq.scalar>=1.04?T.green:T.red),borderRadius:6}}>
-              <div style={{color:T.muted,fontSize:9.5,textTransform:"uppercase",marginBottom:3}}>MQ Scalar</div>
-              <div style={{color:d.menthorq.scalar>=1.04?T.green:d.menthorq.scalar<=0.96?T.red:T.gold,fontWeight:900,fontSize:24,fontFamily:"monospace"}}>{d.menthorq.scalar?.toFixed(3)}x</div>
-              <div style={{color:T.muted,fontSize:10,textTransform:"uppercase",marginTop:3}}>{d.menthorq.regime}</div>
+        )}
+
+        {/* Row 5: Key Levels + GEX Chart */}
+        <div style={{display:"grid",gridTemplateColumns:"280px 1fr",gap:12}}>
+          <Panel>
+            <Label>Key Levels</Label>
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {[
+                {l:"Spot",     v:fmtK(d.spot),            c:C.blue,   highlight:true},
+                {l:"HVL",      v:fmtK(d.hvl),             c:C.gold,   highlight:true},
+                {l:"Call Res", v:fmtK(d.call_resistance),  c:C.green},
+                {l:"Put Sup",  v:fmtK(d.put_support),      c:C.red},
+                {l:"CR 0DTE",  v:fmtK(d.call_resistance_0dte), c:"#44e8a0"},
+                {l:"PS 0DTE",  v:fmtK(d.put_support_0dte), c:"#ff7a5c"},
+                {l:"Dist HVL", v:`${distHVL}%`,            c:+distHVL<2?C.gold:C.muted},
+                {l:"P/C OI",   v:d.pc_ratio?.toFixed(3),   c:d.pc_ratio>1.2?C.green:d.pc_ratio<0.7?C.red:C.text},
+                {l:"Term",     v:d.term_shape,             c:d.term_shape==="CONTANGO"?C.green:C.red},
+                {l:"IV Rank",  v:pct(d.iv_rank),           c:d.iv_rank>70?C.red:d.iv_rank>40?C.gold:C.green},
+              ].map((row,i)=>(
+                <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"6px 8px",background:row.highlight?`${row.c}10`:C.card2,border:`1px solid ${row.highlight?row.c+"40":C.border}`,borderRadius:5}}>
+                  <span style={{color:C.muted,fontSize:10,textTransform:"uppercase"}}>{row.l}</span>
+                  <span style={{color:row.c,fontWeight:700,fontFamily:"monospace",fontSize:11}}>{row.v}</span>
+                </div>
+              ))}
             </div>
-            <div style={{padding:"10px 12px",background:T.card2,border:"1px solid "+T.border,borderRadius:6}}>
-              <div style={{color:T.muted,fontSize:9.5,textTransform:"uppercase",marginBottom:3}}>Funding Scalar</div>
-              <div style={{color:d.funding?.scalar>=1?T.green:T.orange,fontWeight:900,fontSize:24,fontFamily:"monospace"}}>{d.funding?.scalar?.toFixed(3)}x</div>
-              <div style={{color:T.muted,fontSize:10,textTransform:"uppercase",marginTop:3}}>{d.funding?.regime}</div>
+          </Panel>
+          <Panel>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <Label style={{marginBottom:0}}>Net GEX — Deribit</Label>
+              <span style={{color:gp?C.green:C.orange,fontWeight:700,fontSize:11,fontFamily:"monospace"}}>{gp?"+":""}{d.total_net_gex?.toFixed(1)}M USD</span>
             </div>
-            <div style={{padding:"10px 12px",background:T.card2,border:"1px solid "+T.border,borderRadius:6}}>
-              <div style={{color:T.muted,fontSize:9.5,textTransform:"uppercase",marginBottom:3}}>Final Scalar</div>
-              <div style={{color:d.layer_budget?.final_scalar>=1.02?T.green:d.layer_budget?.final_scalar<=0.97?T.red:T.gold,fontWeight:900,fontSize:24,fontFamily:"monospace"}}>{d.layer_budget?.final_scalar?.toFixed(3)}x</div>
-              <div style={{color:T.muted,fontSize:10,marginTop:3}}>Pozisyon carpani</div>
-            </div>
-          </div>
-        </Card>)}
-        <div style={{display:"grid",gridTemplateColumns:"300px 1fr",gap:14,alignItems:"start"}}>
-          <Card>
-            <ST>Key Levels</ST>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7}}>
-              <KV label="Spot Price" value={fmtK(d.spot)} color={T.blue} highlight/>
-              <KV label="High Vol Level" value={fmtK(d.hvl)} color={T.gold} highlight/>
-              <KV label="Call Resistance" value={fmtK(d.call_resistance)} color={T.green}/>
-              <KV label="Put Support" value={fmtK(d.put_support)} color={T.orange}/>
-              <KV label="CR 0DTE" value={fmtK(d.call_resistance_0dte)} color="#58c76e"/>
-              <KV label="PS 0DTE" value={fmtK(d.put_support_0dte)} color="#f9a86a"/>
-              <KV label="IV Rank 30D" value={pct(d.iv_rank)}/>
-              <KV label="Term Shape" value={d.term_shape} color={d.term_shape==="CONTANGO"?T.green:T.red}/>
-              <KV label="Dist. HVL" value={`${distHVL}%`}/>
-              <KV label="P/C OI" value={d.pc_ratio?.toFixed(3)} color={d.pc_ratio>1.2?T.red:d.pc_ratio<0.8?T.green:T.text}/>
-            </div>
-          </Card>
-          <Card>
-            <ST>Net GEX — All Expirations (Deribit) <span style={{color:gammaPos?T.green:T.orange}}>TOTAL: {gammaPos?"+":""}{d.total_net_gex?.toFixed(1)}M USD</span></ST>
-            <div style={{display:"flex",gap:20,marginBottom:8,fontSize:10.5}}>
-              <span><span style={{color:T.green}}>──</span> CR {fmtK(d.call_resistance)}</span>
-              <span><span style={{color:T.gold}}>──</span> HVL {fmtK(d.hvl)}</span>
-              <span><span style={{color:T.orange}}>──</span> PS {fmtK(d.put_support)}</span>
+            <div style={{display:"flex",gap:16,marginBottom:8,fontSize:10}}>
+              <span><span style={{color:C.green}}>──</span> CR {fmtK(d.call_resistance)}</span>
+              <span><span style={{color:C.gold}}>──</span> HVL {fmtK(d.hvl)}</span>
+              <span><span style={{color:C.red}}>──</span> PS {fmtK(d.put_support)}</span>
             </div>
             <GEXChart data={gexRows} spot={d.spot} hvl={d.hvl} callRes={d.call_resistance} putSup={d.put_support}/>
-          </Card>
+          </Panel>
         </div>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:14,alignItems:"start"}}>
-          <Card>
-            <ST>Implied Vol × Open Interest</ST>
-            <div style={{display:"flex",gap:14,marginBottom:8,fontSize:10.5}}>
-              <span><span style={{color:T.green}}>█</span> Calls</span>
-              <span><span style={{color:T.orange}}>█</span> Puts</span>
+
+        {/* Row 6: IV×OI + Term + Entry Signal */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+          <Panel>
+            <Label>IV × OI Dağılımı</Label>
+            <div style={{display:"flex",gap:12,marginBottom:8,fontSize:10}}>
+              <span><span style={{color:C.green}}>█</span> Calls</span>
+              <span><span style={{color:C.red}}>█</span> Puts</span>
             </div>
             <IVOIChart data={ivoiRows} spot={d.spot}/>
-          </Card>
-          <Card>
-            <ST>ATM Term Structure</ST>
-            <div style={{marginBottom:6,fontSize:10.5}}>
-              <span style={{color:d.term_shape==="CONTANGO"?T.green:T.red}}>{d.term_shape}</span>
-              <span style={{color:T.muted,marginLeft:10}}>Front IV: {d.front_iv?.toFixed(2)}%</span>
+          </Panel>
+          <Panel>
+            <Label>ATM Term Structure</Label>
+            <div style={{display:"flex",gap:10,marginBottom:6,fontSize:10,alignItems:"center"}}>
+              <Tag color={d.term_shape==="CONTANGO"?C.green:C.red}>{d.term_shape}</Tag>
+              <span style={{color:C.muted}}>Front IV: {d.front_iv?.toFixed(2)}%</span>
             </div>
             <TermChart data={d.term_ivs||[]}/>
-          </Card>
-          <Card borderColor={regime.color}>
-            <ST>G-DIVE V4 — Entry Signal</ST>
-            <div style={{marginBottom:14}}>
-              <div style={{fontSize:26,fontWeight:900,color:regime.color,marginBottom:2}}>{d.long_ok?"▲  LONG OK":d.short_ok?"▼  SHORT OK":"—  BEKLE"}</div>
-              <div style={{fontSize:12.5,color:regime.color,fontWeight:700,marginBottom:3}}>{regime.txt}</div>
-              <div style={{fontSize:11,color:T.muted,lineHeight:1.5}}>{regime.sub}</div>
+          </Panel>
+          <Panel accent={regime.color}>
+            <Label>G-DIVE Entry Signal</Label>
+            <div style={{background:regime.bg,border:`1px solid ${regime.color}40`,borderRadius:8,padding:"14px",marginBottom:10}}>
+              <div style={{color:regime.color,fontSize:22,fontWeight:900,marginBottom:2}}>{d.long_ok?"▲ LONG OK":d.short_ok?"▼ SHORT OK":"— BEKLE"}</div>
+              <div style={{color:regime.color,fontSize:11,fontWeight:700}}>{regime.label}</div>
             </div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
-              <div style={{padding:"8px 10px",background:"#2c0a08",border:`1px solid ${T.red}40`,borderRadius:6}}>
-                <div style={{color:T.muted,fontSize:9.5,textTransform:"uppercase",marginBottom:3}}>Stop Loss</div>
-                <div style={{color:T.red,fontWeight:800,fontSize:15,fontFamily:"monospace"}}>{fmtK(d.put_support)}</div>
-                <div style={{color:T.muted,fontSize:9.5}}>Put Support</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:8}}>
+              <div style={{padding:"8px",background:C.redDim,border:`1px solid ${C.red}30`,borderRadius:6}}>
+                <div style={{color:C.muted,fontSize:9,marginBottom:2}}>STOP</div>
+                <div style={{color:C.red,fontWeight:800,fontSize:13,fontFamily:"monospace"}}>{fmtK(d.put_support)}</div>
               </div>
-              <div style={{padding:"8px 10px",background:"#0d2c12",border:`1px solid ${T.green}40`,borderRadius:6}}>
-                <div style={{color:T.muted,fontSize:9.5,textTransform:"uppercase",marginBottom:3}}>TP Hedefi</div>
-                <div style={{color:T.green,fontWeight:800,fontSize:15,fontFamily:"monospace"}}>{fmtK(d.call_resistance)}</div>
-                <div style={{color:T.muted,fontSize:9.5}}>Call Resistance</div>
+              <div style={{padding:"8px",background:C.greenDim,border:`1px solid ${C.green}30`,borderRadius:6}}>
+                <div style={{color:C.muted,fontSize:9,marginBottom:2}}>TP</div>
+                <div style={{color:C.green,fontWeight:800,fontSize:13,fontFamily:"monospace"}}>{fmtK(d.call_resistance)}</div>
               </div>
             </div>
-            <div style={{padding:"8px 12px",background:d.gamma_regime==="LONG_GAMMA"?"#0d2c1266":"#2c0a0866",border:`1px solid ${d.gamma_regime==="LONG_GAMMA"?T.green:T.red}40`,borderRadius:6,marginBottom:12}}>
-              <span style={{color:d.gamma_regime==="LONG_GAMMA"?T.green:T.red,fontWeight:700,fontSize:12}}>{d.gamma_regime==="LONG_GAMMA"?"● LONG GAMMA":"● SHORT GAMMA"}</span>
-              <div style={{color:T.muted,fontSize:10.5,marginTop:3}}>{d.gamma_regime==="LONG_GAMMA"?`Spot > HVL ($${d.hvl?.toLocaleString()}) · Dealer söndürür`:`Spot < HVL ($${d.hvl?.toLocaleString()}) · Dealer büyütür`}</div>
+            <div style={{padding:"8px",background:d.gamma_regime==="LONG_GAMMA"?C.greenDim:C.redDim,border:`1px solid ${d.gamma_regime==="LONG_GAMMA"?C.green:C.red}30`,borderRadius:6,marginBottom:8}}>
+              <span style={{color:d.gamma_regime==="LONG_GAMMA"?C.green:C.red,fontSize:11,fontWeight:700}}>{d.gamma_regime==="LONG_GAMMA"?"● LONG GAMMA":"● SHORT GAMMA"}</span>
+              <div style={{color:C.muted,fontSize:9.5,marginTop:2}}>{d.gamma_regime==="LONG_GAMMA"?`Spot > HVL · Dealer söndürür`:`Spot < HVL · Dealer büyütür`}</div>
             </div>
-            <div style={{fontSize:10,color:T.muted,marginBottom:6,textTransform:"uppercase"}}>Kritik GEX Düğümleri</div>
-            <div style={{display:"flex",flexDirection:"column",gap:3}}>
-              {[...(d.pos_gex_nodes||[]).slice(0,2).map(n=>({...n,color:T.green})),...(d.neg_gex_nodes||[]).slice(0,2).map(n=>({...n,color:T.orange}))].sort((a,b)=>a.strike-b.strike).map((n,i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:10.5,padding:"2px 0"}}><span style={{color:T.muted,fontFamily:"monospace"}}>${n.strike.toLocaleString()}</span><span style={{color:n.color,fontWeight:700}}>{n.net_gex>=0?"+":""}{n.net_gex?.toFixed(1)}M</span></div>))}
+            <div style={{fontSize:9,color:C.muted,marginBottom:4,textTransform:"uppercase"}}>GEX Düğümleri</div>
+            {[...(d.pos_gex_nodes||[]).slice(0,2).map(n=>({...n,c:C.green})),...(d.neg_gex_nodes||[]).slice(0,2).map(n=>({...n,c:C.orange}))].sort((a,b)=>a.strike-b.strike).map((n,i)=>(
+              <div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:10,padding:"2px 0",borderBottom:`1px solid ${C.border}`}}>
+                <span style={{color:C.muted,fontFamily:"monospace"}}>${n.strike?.toLocaleString()}</span>
+                <span style={{color:n.c,fontWeight:700}}>{n.net_gex>=0?"+":""}{n.net_gex?.toFixed(1)}M</span>
+              </div>
+            ))}
+            <div style={{marginTop:8,paddingTop:6,borderTop:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",fontSize:9,color:C.muted}}>
+              <span>OPT {d.option_score}/5</span><span>VOL {d.vol_score}/5</span><span>MOM {d.momentum_score||3}/5</span>
             </div>
-            <div style={{marginTop:12,paddingTop:10,borderTop:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",fontSize:9.5,color:T.muted}}>
-              <span>OPT {d.option_score}/5</span><span>VOL {d.vol_score}/5</span><span>MOM {d.momentum_score??3}/5</span>
-            </div>
-          </Card>
+          </Panel>
         </div>
-        {d.multi_asset&&d.multi_asset.weights&&(
-          <Card bc={T.purple}>
-            <ST>Multi-Asset Trend Weights — BTC · GLD · TLT</ST>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
-              {[
-                {label:"BTC Weight",value:((d.multi_asset.weights.BTC||0)*100).toFixed(1)+"%",color:d.multi_asset.weights.BTC>0?T.green:T.red},
-                {label:"GLD Weight",value:((d.multi_asset.weights.GLD||0)*100).toFixed(1)+"%",color:d.multi_asset.weights.GLD>0?T.gold:T.muted},
-                {label:"TLT Weight",value:((d.multi_asset.weights.TLT||0)*100).toFixed(1)+"%",color:d.multi_asset.weights.TLT>0?T.blue:T.muted},
-                {label:"Realized Vol",value:((d.multi_asset.realized_vol||0)*100).toFixed(1)+"%",color:d.multi_asset.realized_vol>0.6?T.red:T.green},
-              ].map((s,i)=>(
-                <div key={i} style={{padding:"10px 12px",background:T.card2,border:"1px solid "+T.border,borderRadius:6}}>
-                  <div style={{color:T.muted,fontSize:9.5,textTransform:"uppercase",marginBottom:3}}>{s.label}</div>
-                  <div style={{color:s.color,fontWeight:900,fontSize:20,fontFamily:"monospace"}}>{s.value}</div>
-                </div>
-              ))}
-            </div>
-          </Card>
-        )}
-        {riskStatus&&(
+
+        {/* Row 7: Risk + Backtest */}
+        {riskStatus && (
           <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
             {[
-              {label:"Gunluk P&L",value:(riskStatus.dailyPnl>=0?"+":"")+riskStatus.dailyPnl.toFixed(0)+" / -$"+riskStatus.dailyLossLimit,color:riskStatus.dailyLimitHit?T.red:riskStatus.dailyPnl>=0?T.green:T.orange,alert:riskStatus.dailyLimitHit},
-              {label:"Max Drawdown",value:riskStatus.maxDD+"% / limit %"+(RISK_CONFIG.maxDrawdownPct*100),color:riskStatus.drawdownLimitHit?T.red:riskStatus.maxDD>5?T.orange:T.green,alert:riskStatus.drawdownLimitHit},
-              {label:"Acik Pozisyon",value:riskStatus.openCount+" / max "+RISK_CONFIG.maxOpenPositions,color:riskStatus.maxPosHit?T.orange:T.green},
-              {label:"Kill Switch",value:riskStatus.killSwitch?"AKTIF":"NORMAL",color:riskStatus.killSwitch?T.red:T.green,alert:riskStatus.killSwitch},
+              {l:"Günlük P&L",v:(riskStatus.dailyPnl>=0?"+":"")+riskStatus.dailyPnl.toFixed(0)+" / -$"+riskStatus.dailyLossLimit,c:riskStatus.dailyLimitHit?C.red:riskStatus.dailyPnl>=0?C.green:C.orange,alert:riskStatus.dailyLimitHit},
+              {l:"Max Drawdown",v:riskStatus.maxDD+"% / limit %"+(RISK_CONFIG.maxDrawdownPct*100),c:riskStatus.drawdownLimitHit?C.red:riskStatus.maxDD>5?C.gold:C.green,alert:riskStatus.drawdownLimitHit},
+              {l:"Açık Pozisyon",v:riskStatus.openCount+" / max "+RISK_CONFIG.maxOpenPositions,c:riskStatus.maxPosHit?C.orange:C.green},
+              {l:"Kill Switch",v:riskStatus.killSwitch?"⚠ AKTİF":"✓ NORMAL",c:riskStatus.killSwitch?C.red:C.green,alert:riskStatus.killSwitch},
             ].map((s,i)=>(
-              <div key={i} style={{background:s.alert?"${T.red}15":T.card,border:"1px solid "+(s.alert?s.color:T.border),borderTop:"3px solid "+s.color,borderRadius:8,padding:"10px 14px"}}>
-                <div style={{color:T.muted,fontSize:9.5,textTransform:"uppercase",marginBottom:4}}>{s.label}</div>
-                <div style={{color:s.color,fontWeight:700,fontSize:13,fontFamily:"monospace"}}>{s.value}</div>
+              <div key={i} style={{background:s.alert?`${s.c}10`:C.card,border:`1px solid ${s.alert?s.c:C.border}`,borderTop:`2px solid ${s.c}`,borderRadius:8,padding:"10px 12px"}}>
+                <div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:4}}>{s.l}</div>
+                <div style={{color:s.c,fontWeight:700,fontSize:12,fontFamily:"monospace"}}>{s.v}</div>
               </div>
             ))}
           </div>
         )}
-        {btResult&&(
-          <Card>
-            <ST>Backtest - 4H BTC 500 Bar 2x Kaldirac ATR Bazli</ST>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:10}}>
+
+        {btResult && (
+          <Panel>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <Label style={{marginBottom:0}}>Backtest — 4H BTC 500 Bar · 2x Kaldıraç · ATR Bazlı</Label>
+              <Tag color={btResult.profitFactor>=1.5?C.green:btResult.profitFactor>=1?C.gold:C.red}>PF {btResult.profitFactor}x</Tag>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8}}>
               {[
-                {label:"Trade",value:btResult.trades,color:T.muted},
-                {label:"Win Rate",value:btResult.winRate+"%",color:btResult.winRate>=50?T.green:T.orange},
-                {label:"Profit Factor",value:btResult.profitFactor+"x",color:btResult.profitFactor>=1.5?T.green:btResult.profitFactor>=1?T.gold:T.red},
-                {label:"Sharpe",value:btResult.sharpe,color:btResult.sharpe>=1?T.green:btResult.sharpe>=0?T.gold:T.red},
-                {label:"Max DD",value:btResult.maxDD+"%",color:btResult.maxDD<10?T.green:btResult.maxDD<20?T.orange:T.red},
-                {label:"Toplam PnL",value:(btResult.totalPnl>=0?"+":"")+btResult.totalPnl.toFixed(0),color:btResult.totalPnl>=0?T.green:T.red},
-                {label:"Avg Win",value:"+$"+btResult.avgWin.toFixed(0),color:T.green},
-                {label:"Avg Loss",value:"-$"+btResult.avgLoss.toFixed(0),color:T.red},
-                {label:"Expectancy",value:(btResult.expectancy>=0?"+":"")+btResult.expectancy.toFixed(0),color:btResult.expectancy>=0?T.green:T.red},
-                {label:"Final Equity",value:"$"+btResult.finalEquity.toFixed(0),color:btResult.finalEquity>=10000?T.green:T.red},
+                {l:"Trade",       v:btResult.trades,                                          c:C.muted},
+                {l:"Win Rate",    v:btResult.winRate+"%",                                     c:btResult.winRate>=50?C.green:C.orange},
+                {l:"Sharpe",      v:btResult.sharpe,                                          c:btResult.sharpe>=1?C.green:btResult.sharpe>=0?C.gold:C.red},
+                {l:"Max DD",      v:btResult.maxDD+"%",                                       c:btResult.maxDD<10?C.green:btResult.maxDD<20?C.gold:C.red},
+                {l:"Toplam PnL",  v:(btResult.totalPnl>=0?"+":"")+btResult.totalPnl.toFixed(0), c:btResult.totalPnl>=0?C.green:C.red},
+                {l:"Avg Win",     v:"+$"+btResult.avgWin.toFixed(0),                         c:C.green},
+                {l:"Avg Loss",    v:"-$"+btResult.avgLoss.toFixed(0),                        c:C.red},
+                {l:"Expectancy",  v:(btResult.expectancy>=0?"+":"")+btResult.expectancy.toFixed(0), c:btResult.expectancy>=0?C.green:C.red},
+                {l:"Final Equity",v:"$"+btResult.finalEquity.toFixed(0),                     c:btResult.finalEquity>=10000?C.green:C.red},
+                {l:"Profit Factor",v:btResult.profitFactor+"×",                              c:btResult.profitFactor>=1.5?C.green:btResult.profitFactor>=1?C.gold:C.red},
               ].map((s,i)=>(
-                <div key={i} style={{padding:"8px 10px",background:T.card2,border:"1px solid "+T.border,borderRadius:6}}>
-                  <div style={{color:T.muted,fontSize:9.5,textTransform:"uppercase",marginBottom:3}}>{s.label}</div>
-                  <div style={{color:s.color,fontWeight:700,fontSize:14,fontFamily:"monospace"}}>{s.value}</div>
+                <div key={i} style={{padding:"8px 10px",background:C.card2,border:`1px solid ${C.border}`,borderRadius:6}}>
+                  <div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:2}}>{s.l}</div>
+                  <div style={{color:s.c,fontWeight:700,fontSize:13,fontFamily:"monospace"}}>{s.v}</div>
                 </div>
               ))}
             </div>
-          </Card>
+            {btResult.expectancy<0&&<div style={{marginTop:8,padding:"8px 12px",background:`${C.red}10`,border:`1px solid ${C.red}30`,borderRadius:6,fontSize:10.5,color:C.orange}}>⚠ Negatif beklenti — ATR stop mesafesi veya RR oranı optimize edilmeli. Mevcut: {btResult.avgWin.toFixed(0)} vs {btResult.avgLoss.toFixed(0)} kaybediyor.</div>}
+          </Panel>
         )}
-        <div style={{borderTop:`1px solid ${T.border}`,paddingTop:10,display:"flex",justifyContent:"space-between",fontSize:10,color:T.muted}}>
-          <span>G-DIVE V4 Options Intelligence Module · Deribit Public API</span>
-          <span>{live?`● Canlı · ${clock}`:`◆ Demo modu`}</span>
+
+        <div style={{borderTop:`1px solid ${C.border}`,paddingTop:8,display:"flex",justifyContent:"space-between",fontSize:9,color:C.dim}}>
+          <span>G-DIVE V4 Options Intelligence · Deribit Public API · Railway</span>
+          <span>{live?`● Canlı · ${clock}`:`◆ Demo`}</span>
         </div>
       </div>
     </div>

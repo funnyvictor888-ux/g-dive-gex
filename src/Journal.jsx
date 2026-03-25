@@ -91,7 +91,7 @@ function WinLossBar({wins,total}){
 }
 
 // ── Trade Row ─────────────────────────────────────────────────────
-function TradeRow({trade,price,onClose,onDelete}){
+function TradeRow({trade,price,serverData,onClose,onDelete}){
   const [exitVal,setExitVal]=useState("");
   const isOpen=trade.status==="OPEN";
   const dirColor=trade.dir==="LONG"?C.green:C.red;
@@ -317,7 +317,7 @@ export default function Journal(){
           <div style={{background:C.card,border:`1px solid ${C.gold}30`,borderTop:`2px solid ${C.gold}`,borderRadius:10,padding:"14px 16px"}}>
             <div style={{color:C.gold,fontSize:9.5,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:10}}>● Açık Pozisyonlar — {open.length}</div>
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
-              {open.map(t=><TradeRow key={t.id} trade={t} price={price} onClose={closeTrade} onDelete={deleteTrade}/>)}
+              {open.map(t=><TradeRow key={t.id} trade={t} price={price} serverData={serverData} onClose={closeTrade} onDelete={deleteTrade}/>)}
             </div>
           </div>
         )}
@@ -397,7 +397,7 @@ export default function Journal(){
 
           <div style={{display:"flex",flexDirection:"column",gap:8}}>
             {filtered.filter(t=>t.status!=="OPEN").map(t=>(
-              <TradeRow key={t.id} trade={t} price={price} onClose={closeTrade} onDelete={deleteTrade}/>
+              <TradeRow key={t.id} trade={t} price={price} serverData={serverData} onClose={closeTrade} onDelete={deleteTrade}/>
             ))}
           </div>
         </div>

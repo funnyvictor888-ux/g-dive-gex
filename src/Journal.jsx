@@ -93,11 +93,22 @@ function WinLossBar({wins,total}){
 // ── Trade Row ─────────────────────────────────────────────────────
 function TradeRow({trade,price,serverData,onClose,onDelete}){
   const [exitVal,setExitVal]=useState("");
+  const C={bg:"#06080e",card:"#0e1520",card2:"#121c2a",border:"#1a2535",text:"#dce8f5",muted:"#3d5470",dim:"#1a2840",green:"#00e599",greenDim:"#002a1a",red:"#ff3d5a",redDim:"#2a0010",orange:"#ff7a2f",gold:"#ffbe2e",blue:"#3db8ff",purple:"#9d7aff"};
   const isOpen=trade.status==="OPEN";
   const dirColor=trade.dir==="LONG"?C.green:C.red;
   const pnlColor=(trade.pnl||0)>0?C.green:(trade.pnl||0)<0?C.red:C.muted;
   const liveUnrealized=isOpen&&price?((trade.dir==="LONG"?price-trade.entry:trade.entry-price)*trade.size):null;
   const liveColor=liveUnrealized>0?C.green:liveUnrealized<0?C.red:C.muted;
+  const totalRange=Math.abs(trade.tp-trade.stop);
+  const progress=price&&totalRange>0?Math.max(0,Math.min(100,(trade.dir==="LONG"?price-trade.stop:trade.stop-price)/totalRange*100)):50;
+  let advice=null;
+  if(isOpen&&serverData){
+    const reg=serverData.regime,sp=serverData.spot,hvl=serverData.hvl,gex=serverData.total_net_gex;
+    const bull=["IDEAL_LONG","BULLISH_HIGH_VOL"].includes(reg)&&sp>hvl&&gex>0;
+    const bear=["BEARISH_VOLATILE","BEARISH_LOW_VOL","HIGH_RISK"].includes(reg)&&sp<hvl&&gex<0;
+    if(trade.dir==="LONG") advice=bull?{c:C.green,t:"✓ Devam Et — "+reg.replace(/_/g," ")+" koşullar sağlam"}:bear?{c:C.red,t:"⚠ KAPAT — Rejim SHORT döndü"}:{c:C.gold,t:"⚡ Dikkatli — Koşullar zayıfladı"};
+    else advice=bear?{c:C.green,t:"✓ Devam Et — SHORT koşullar sağlam"}:bull?{c:C.red,t:"⚠ KAPAT — Rejim LONG döndü"}:{c:C.gold,t:"⚡ Dikkatli"};
+  }
   return(
     <div style={{background:C.card2,border:`1px solid ${isOpen?C.gold+"50":C.border}`,borderLeft:`3px solid ${isOpen?C.gold:pnlColor||C.border}`,borderRadius:8,padding:"12px 14px",transition:"all 0.2s"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
@@ -123,6 +134,27 @@ function TradeRow({trade,price,serverData,onClose,onDelete}){
         const adviceColor=advice.startsWith("✓")?C.green:advice.startsWith("⚠")?C.red:C.gold;
         return(<div style={{padding:"7px 10px",background:adviceColor+"10",border:"1px solid "+adviceColor+"30",borderLeft:"3px solid "+adviceColor,borderRadius:5,marginBottom:8,fontSize:10.5,color:C.text}}>{advice}</div>);
       })()}
+      {isOpen&&liveUnrealized!=null&&(
+        <div style={{marginBottom:10,padding:"12px",background:liveColor+"08",border:"1px solid "+liveColor+"30",borderRadius:8}}>
+          <div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:4}}>Anlık Kâr / Zarar</div>
+          <div style={{color:liveColor,fontSize:32,fontWeight:900,fontFamily:"monospace",lineHeight:1}}>{liveUnrealized>=0?"+":""}{liveUnrealized.toFixed(0)} USD</div>
+          <div style={{color:C.muted,fontSize:9.5,marginTop:2}}>@ {price?.toLocaleString("en-US",{maximumFractionDigits:0})} anlık fiyat · Giriş {trade.entry?.toLocaleString()}</div>
+        </div>
+      )}
+      {isOpen&&price&&(
+        <div style={{marginBottom:10}}>
+          <div style={{position:"relative",height:8,background:C.dim,borderRadius:99,overflow:"hidden",marginBottom:4}}>
+            <div style={{position:"absolute",left:0,top:0,height:"100%",width:progress+"%",background:"linear-gradient(90deg,"+C.red+"60,"+C.green+"80)",borderRadius:99}}/>
+            <div style={{position:"absolute",left:progress+"%",top:-1,height:10,width:3,background:C.blue,transform:"translateX(-50%)",borderRadius:99}}/>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:C.muted}}>
+            <span style={{color:C.red}}>Stop ${trade.stop?.toLocaleString()}</span>
+            <span style={{color:C.blue,fontWeight:700}}>Şu an ${price?.toLocaleString("en-US",{maximumFractionDigits:0})}</span>
+            <span style={{color:C.green}}>TP ${trade.tp?.toLocaleString()}</span>
+          </div>
+        </div>
+      )}
+      {advice&&<div style={{marginBottom:8,padding:"7px 10px",background:advice.c+"10",border:"1px solid "+advice.c+"30",borderLeft:"3px solid "+advice.c,borderRadius:5,fontSize:10.5,color:C.text}}>{advice.t}</div>}
       {isOpen&&liveUnrealized!=null&&(
             <div style={{textAlign:"right"}}>
               <div style={{color:liveColor,fontWeight:700,fontSize:12,fontFamily:"monospace"}}>{liveUnrealized>0?"+":""}{liveUnrealized.toFixed(0)} <span style={{fontSize:9}}>live</span></div>

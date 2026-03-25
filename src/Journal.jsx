@@ -91,6 +91,83 @@ function WinLossBar({wins,total}){
 }
 
 // ── Trade Row ─────────────────────────────────────────────────────
+function OpenCard({trade,price,sData,onClose,onDelete}){
+  const [ex,setEx]=useState("");
+  const unreal=price?((trade.dir==="LONG"?price-trade.entry:trade.entry-price)*trade.size):0;
+  const uColor=unreal>=0?"#00e599":"#ff3d5a";
+  const range=Math.abs(trade.tp-trade.stop);
+  const prog=price&&range>0?Math.max(0,Math.min(100,(trade.dir==="LONG"?price-trade.stop:trade.stop-price)/range*100)):50;
+  const dStop=price?(Math.abs(price-trade.stop)/price*100).toFixed(1):"?";
+  const dTP=price?(Math.abs(trade.tp-price)/price*100).toFixed(1):"?";
+  let adv=null;
+  if(sData){const r=sData.regime,sp=sData.spot,h=sData.hvl,g=sData.total_net_gex;const bull=["IDEAL_LONG","BULLISH_HIGH_VOL"].includes(r)&&sp>h&&g>0;const bear=["BEARISH_VOLATILE","BEARISH_LOW_VOL","HIGH_RISK"].includes(r)&&sp<h&&g<0;if(trade.dir==="LONG"){if(bull)adv={c:"#00e599",t:"✓ Devam Et — "+r.replace(/_/g," ")+" koşullar sağlam, GEX +"+g.toFixed(0)+"M"};else if(bear)adv={c:"#ff3d5a",t:"⚠ KAPAT — Rejim SHORT döndü ("+r.replace(/_/g," ")+")"};else adv={c:"#ffbe2e",t:"⚡ Dikkatli — Koşullar zayıfladı, takip et"};}else{if(bear)adv={c:"#00e599",t:"✓ Devam Et — SHORT koşullar sağlam"};else if(bull)adv={c:"#ff3d5a",t:"⚠ KAPAT — Rejim LONG döndü"};else adv={c:"#ffbe2e",t:"⚡ Dikkatli"};}}
+  return(
+    <div style={{background:"#0e1520",border:"2px solid #ffbe2e40",borderRadius:12,overflow:"hidden",marginBottom:4}}>
+      <div style={{background:"#ffbe2e10",borderBottom:"1px solid #ffbe2e25",padding:"10px 16px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          <span style={{width:8,height:8,borderRadius:"50%",background:"#ffbe2e",display:"inline-block"}}/>
+          <span style={{color:"#ffbe2e",fontWeight:900,fontSize:11}}>AKTİF POZİSYON</span>
+          <span style={{color:trade.dir==="LONG"?"#00e599":"#ff3d5a",fontWeight:900}}>{trade.dir==="LONG"?"▲":"▼"} {trade.dir}</span>
+          <span style={{color:"#3d5470",fontSize:9.5}}>{trade.date}</span>
+        </div>
+        <button onClick={()=>onDelete(trade.id)} style={{background:"transparent",border:"1px solid #1a2535",color:"#3d5470",padding:"2px 8px",borderRadius:4,cursor:"pointer",fontSize:9}}>✕</button>
+      </div>
+      <div style={{padding:16}}>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:14}}>
+          <div style={{background:uColor+"08",border:"1px solid "+uColor+"30",borderRadius:10,padding:"14px 16px",textAlign:"center"}}>
+            <div style={{color:"#3d5470",fontSize:9,textTransform:"uppercase",marginBottom:6}}>Anlık Kâr / Zarar</div>
+            <div style={{color:uColor,fontSize:38,fontWeight:900,fontFamily:"monospace",lineHeight:1}}>{unreal>=0?"+":""}{unreal.toFixed(0)}<span style={{fontSize:16}}> $</span></div>
+            <div style={{color:uColor,fontSize:11,marginTop:4}}>{((unreal/10000)*100).toFixed(2)}% sermaye</div>
+            <div style={{color:"#3d5470",fontSize:9.5,marginTop:2}}>{price?"$"+price.toLocaleString("en-US",{maximumFractionDigits:0}):"—"} anlık</div>
+          </div>
+          <div style={{background:"#121c2a",border:"1px solid #1a2535",borderRadius:10,padding:"12px 14px"}}>
+            <div style={{color:"#3d5470",fontSize:9,textTransform:"uppercase",marginBottom:8}}>Pozisyon</div>
+            {[{l:"Giriş",v:"$"+trade.entry.toLocaleString(),c:"#3db8ff"},{l:"Lot",v:trade.size+" BTC",c:"#dce8f5"},{l:"Nominal",v:"$"+(trade.entry*trade.size).toFixed(0),c:"#3d5470"},{l:"Risk",v:"$"+(Math.abs(trade.entry-trade.stop)*trade.size).toFixed(0),c:"#ff7a2f"}].map((s,i)=>(
+              <div key={i} style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                <span style={{color:"#3d5470",fontSize:9.5}}>{s.l}</span>
+                <span style={{color:s.c,fontFamily:"monospace",fontSize:11,fontWeight:700}}>{s.v}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{background:"#121c2a",border:"1px solid #1a2535",borderRadius:10,padding:"12px 14px"}}>
+            <div style={{color:"#3d5470",fontSize:9,textTransform:"uppercase",marginBottom:8}}>Stop & TP</div>
+            {[{l:"Stop Loss",v:"$"+trade.stop.toLocaleString(),c:"#ff3d5a",sub:dStop+"% uzak"},{l:"TP (50%)",v:"$"+trade.tp.toLocaleString(),c:"#00e599",sub:dTP+"% uzak"},{l:"Hedef PnL",v:"+$"+(Math.abs(trade.tp-trade.entry)*trade.size).toFixed(0),c:"#44e8a0"}].map((s,i)=>(
+              <div key={i} style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                <span style={{color:"#3d5470",fontSize:9.5}}>{s.l}</span>
+                <div style={{textAlign:"right"}}><div style={{color:s.c,fontFamily:"monospace",fontSize:11,fontWeight:700}}>{s.v}</div>{s.sub&&<div style={{color:"#3d5470",fontSize:8}}>{s.sub}</div>}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div style={{marginBottom:12}}>
+          <div style={{color:"#3d5470",fontSize:9,textTransform:"uppercase",marginBottom:5}}>Stop → Şu An → TP</div>
+          <div style={{position:"relative",height:10,background:"#1a2840",borderRadius:99,overflow:"hidden",marginBottom:5}}>
+            <div style={{position:"absolute",inset:0,width:prog+"%",background:"linear-gradient(90deg,#ff3d5a50,#00e59970)",borderRadius:99}}/>
+            <div style={{position:"absolute",top:-1,left:prog+"%",height:12,width:3,background:"#3db8ff",borderRadius:99,transform:"translateX(-50%)"}}/>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:9}}>
+            <div><span style={{color:"#ff3d5a",fontWeight:700}}>✕ Stop </span><span style={{color:"#3d5470",fontFamily:"monospace"}}>${trade.stop.toLocaleString()}</span></div>
+            <div style={{textAlign:"center"}}><span style={{color:"#3db8ff",fontWeight:700}}>● Şu An </span><span style={{color:"#3db8ff",fontFamily:"monospace",fontWeight:900}}>{price?"$"+price.toLocaleString("en-US",{maximumFractionDigits:0}):"—"}</span></div>
+            <div style={{textAlign:"right"}}><span style={{color:"#00e599",fontWeight:700}}>◆ TP </span><span style={{color:"#3d5470",fontFamily:"monospace"}}>${trade.tp.toLocaleString()}</span></div>
+          </div>
+        </div>
+        <div style={{background:"#9d7aff08",border:"1px solid #9d7aff20",borderLeft:"3px solid #9d7aff",borderRadius:8,padding:"10px 12px",marginBottom:adv?10:12}}>
+          <div style={{color:"#9d7aff",fontSize:9,textTransform:"uppercase",marginBottom:5}}>◆ Neden Açıldı?</div>
+          <div style={{color:"#dce8f5",fontSize:11,lineHeight:1.7}}>{trade.notes||"Sistem otomatik sinyal"}</div>
+          {trade.signal&&<div style={{color:"#9d7aff",fontSize:9.5,marginTop:4}}>Sinyal: {trade.signal}</div>}
+          <div style={{color:"#3d5470",fontSize:9,marginTop:3}}>Regime: {trade.regime||"—"} · {trade.date}</div>
+        </div>
+        {adv&&<div style={{background:adv.c+"08",border:"1px solid "+adv.c+"30",borderLeft:"3px solid "+adv.c,borderRadius:8,padding:"10px 12px",marginBottom:12,color:"#dce8f5",fontSize:11,lineHeight:1.6}}>{adv.t}</div>}
+        <div style={{display:"flex",gap:8,borderTop:"1px solid #1a2535",paddingTop:12}}>
+          <input type="number" value={ex} onChange={e=>setEx(e.target.value)} placeholder="Çıkış fiyatı..." style={{background:"#121c2a",border:"1px solid #1a2535",borderRadius:5,padding:"7px 10px",color:"#dce8f5",fontFamily:"monospace",fontSize:12,width:150}}/>
+          {price&&<button onClick={()=>setEx(price.toFixed(0))} style={{background:"#3db8ff12",border:"1px solid #3db8ff25",color:"#3db8ff",padding:"7px 12px",borderRadius:5,cursor:"pointer",fontSize:10}}>Market ${price.toLocaleString("en-US",{maximumFractionDigits:0})}</button>}
+          <button onClick={()=>onClose(trade.id,ex||price)} style={{background:"#00e59912",border:"1px solid #00e59930",color:"#00e599",padding:"7px 20px",borderRadius:5,cursor:"pointer",fontFamily:"monospace",fontSize:11,fontWeight:900}}>✓ Kapat</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TradeRow({trade,price,serverData,onClose,onDelete}){
   const [exitVal,setExitVal]=useState("");
   const C={bg:"#06080e",card:"#0e1520",card2:"#121c2a",border:"#1a2535",text:"#dce8f5",muted:"#3d5470",dim:"#1a2840",green:"#00e599",greenDim:"#002a1a",red:"#ff3d5a",redDim:"#2a0010",orange:"#ff7a2f",gold:"#ffbe2e",blue:"#3db8ff",purple:"#9d7aff"};
@@ -349,7 +426,7 @@ export default function Journal(){
           <div style={{background:C.card,border:`1px solid ${C.gold}30`,borderTop:`2px solid ${C.gold}`,borderRadius:10,padding:"14px 16px"}}>
             <div style={{color:C.gold,fontSize:9.5,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:10}}>● Açık Pozisyonlar — {open.length}</div>
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
-              {open.map(t=><TradeRow key={t.id} trade={t} price={price} serverData={serverData} onClose={closeTrade} onDelete={deleteTrade}/>)}
+              {open.map(t=><OpenCard key={t.id} trade={t} price={price} sData={sData||serverData} onClose={closeTrade} onDelete={deleteTrade}/>)}
             </div>
           </div>
         )}

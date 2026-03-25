@@ -295,12 +295,14 @@ export default function Journal(){
   const [trades,setTrades]=useState([]);
   const [price,setPrice]=useState(null);
   const [serverData,setServerData]=useState(null);
+  const [sData,setSData]=useState(null);
   const [showForm,setShowForm]=useState(false);
   const [form,setForm]=useState({dir:"LONG",entry:"",stop:"",tp:"",size:"",notes:"",regime:"",signal:""});
   const [filter,setFilter]=useState("ALL");
   const [sortBy,setSortBy]=useState("date");
 
   const syncFromServer=useCallback(async()=>{
+    fetch(SERVER_URL+"/data").then(r=>r.ok?r.json():null).then(d=>d&&setSData(d)).catch(()=>{});
     try{
       const r=await fetch(SERVER_URL+"/trades");
       if(!r.ok) return;

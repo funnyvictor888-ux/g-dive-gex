@@ -24,8 +24,12 @@ const fmtPnl = n => `${n>=0?"+":""}$${Math.abs(n||0).toFixed(0)}`;
 const fmtPct = n => `${n>=0?"+":""}${(+n).toFixed(2)}%`;
 const clamp = (x,a,b) => Math.max(a,Math.min(b,x));
 
+async function fetchServerData(){try{const r=await fetch(SERVER_URL+"/data");return r.ok?await r.json():null;}catch{return null;}}
+
 function loadTrades(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY)||"[]");}catch{return[];}}
 function saveTrades(t){localStorage.setItem(STORAGE_KEY,JSON.stringify(t));}
+
+function timeSince(d){if(!d)return"—";const diff=(Date.now()-new Date(d.replace(" ","T")+"Z").getTime())/1000;if(diff<3600)return Math.floor(diff/60)+"dk";if(diff<86400)return Math.floor(diff/3600)+"sa "+Math.floor((diff%3600)/60)+"dk";return Math.floor(diff/86400)+"g";}
 
 async function fetchPrice(){
   try{const r=await fetch("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT");return r.ok?+(await r.json()).price:null;}catch{return null;}
@@ -111,7 +115,15 @@ function TradeRow({trade,price,onClose,onDelete}){
               {trade.rr!=null&&<div style={{color:pnlColor,fontSize:9.5}}>{trade.rr>0?"+":""}{trade.rr}R</div>}
             </div>
           )}
-          {isOpen&&liveUnrealized!=null&&(
+          {isOpen&&price&&serverData&&(()=>{
+        const reg=serverData.regime,sp=serverData.spot,hvl=serverData.hvl,gex=serverData.total_net_gex;
+        const bull=["IDEAL_LONG","BULLISH_HIGH_VOL"].includes(reg)&&sp>hvl&&gex>0;
+        const bear=["BEARISH_VOLATILE","BEARISH_LOW_VOL"].includes(reg)&&sp<hvl&&gex<0;
+        const advice=trade.dir==="LONG"?(bull?"✓ Devam Et — "+reg.replace("_"," ")+" Koşullar sağlam":bear?"⚠ KAPAT — Rejim SHORT'a döndü":"⚡ Dikkatli — Koşullar zayıfladı"):(bear?"✓ Devam Et — SHORT koşullar sağlam":bull?"⚠ KAPAT — Rejim LONG'a döndü":"⚡ Dikkatli");
+        const adviceColor=advice.startsWith("✓")?C.green:advice.startsWith("⚠")?C.red:C.gold;
+        return(<div style={{padding:"7px 10px",background:adviceColor+"10",border:"1px solid "+adviceColor+"30",borderLeft:"3px solid "+adviceColor,borderRadius:5,marginBottom:8,fontSize:10.5,color:C.text}}>{advice}</div>);
+      })()}
+      {isOpen&&liveUnrealized!=null&&(
             <div style={{textAlign:"right"}}>
               <div style={{color:liveColor,fontWeight:700,fontSize:12,fontFamily:"monospace"}}>{liveUnrealized>0?"+":""}{liveUnrealized.toFixed(0)} <span style={{fontSize:9}}>live</span></div>
               <div style={{color:C.blue,fontSize:9}}>@{fmtK(price)}</div>
@@ -173,6 +185,7 @@ function TradeRow({trade,price,onClose,onDelete}){
 export default function Journal(){
   const [trades,setTrades]=useState([]);
   const [price,setPrice]=useState(null);
+  const [serverData,setServerData]=useState(null);
   const [showForm,setShowForm]=useState(false);
   const [form,setForm]=useState({dir:"LONG",entry:"",stop:"",tp:"",size:"",notes:"",regime:"",signal:""});
   const [filter,setFilter]=useState("ALL");
@@ -191,8 +204,9 @@ export default function Journal(){
     setTrades(loadTrades());
     fetchPrice().then(p=>p&&setPrice(p));
     syncFromServer();
-    const i1=setInterval(()=>fetchPrice().then(p=>p&&setPrice(p)),30000);
-    const i2=setInterval(syncFromServer,60000);
+    fetchServerData().then(d=>d&&setServerData(d));
+    const i1=setInterval(()=>fetchPrice().then(p=>p&&setPrice(p)),15000);
+    const i2=setInterval(()=>{syncFromServer();fetchServerData().then(d=>d&&setServerData(d));},60000);
     return()=>{clearInterval(i1);clearInterval(i2);};
   },[]);
 

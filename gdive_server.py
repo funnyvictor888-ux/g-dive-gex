@@ -301,6 +301,11 @@ def gamma_regime_analysis(spot, flip_point, gex_by_strike):
         "nearest_neg_strike": nearest_neg[0] if nearest_neg else None,
     }
 
+def combine_layer_scalars(funding_s, menthorq_s, max_down=0.10, max_up=0.08):
+    delta = (funding_s-1.0) + (menthorq_s-1.0)
+    delta = max(-max_down, min(max_up, delta))
+    return round(1.0+delta, 4)
+
 def build_menthorq_state(spot, summaries):
     total_call_oi=0.0; total_put_oi=0.0
     weighted_bias=0.0; weighted_count=0.0

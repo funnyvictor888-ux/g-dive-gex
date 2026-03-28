@@ -355,7 +355,17 @@ export default function App(){
         if(t.status!=="OPEN") return t;
         const now=new Date().toISOString().slice(0,16).replace("T"," ");
         if(t.dir==="LONG"){
-          if(s<=t.stop){changed=true;const pnl=+((t.stop-t.entry)*t.size).toFixed(2);alert("STOP HIT LONG @$"+t.stop+" PnL:$"+pnl);return{...t,status:"CLOSED",exitPrice:t.stop,exitDate:now,pnl,rr:-1,notes:(t.notes||"")+" |STOP"};}
+          // Negatif cebe girilince stop'u bir üst GEX node'a sıkıştır
+          let effectiveStop=t.stop;
+          if(inNegPocket&&data.neg_pockets&&data.neg_pockets.length>0){
+            const nearerStop=data.neg_pockets.find(p=>p.strike>t.stop&&p.strike<s);
+            if(nearerStop) effectiveStop=Math.max(t.stop,nearerStop.strike*0.995);
+          }
+          // Backwardation'da da stop sık
+          if(data.term_shape==="BACKWARDATION"&&!t.notes?.includes("Backwardation")){
+            effectiveStop=Math.max(effectiveStop,t.entry-(t.entry-t.stop)*0.8);
+          }
+          if(s<=effectiveStop){changed=true;const pnl=+((effectiveStop-t.entry)*t.size).toFixed(2);alert("STOP HIT LONG @$"+effectiveStop.toFixed(0)+" PnL:$"+pnl);return{...t,status:"CLOSED",exitPrice:effectiveStop,exitDate:now,pnl,rr:-1,notes:(t.notes||"")+" |STOP"};}
           if(bear){changed=true;const pnl=+((s-t.entry)*t.size).toFixed(2);alert("REJİM DEĞİŞTİ - LONG kapanıyor @$"+s);return{...t,status:"CLOSED",exitPrice:s,exitDate:now,pnl,rr:+((s-t.entry)/(t.entry-t.stop)).toFixed(2),notes:(t.notes||"")+" |REJIM"};}
           if(s>=t.tp&&!t.partialClosed){changed=true;if(bull){const h=+(t.size/2).toFixed(4),nTP=data.call_walls?.find(w=>w>t.tp)||t.tp*1.03;alert("TP %50 LONG @$"+t.tp);return{...t,size:h,partialClosed:true,tp:nTP,notes:(t.notes||"")+" |TP50@"+t.tp};}else{const pnl=+((t.tp-t.entry)*t.size).toFixed(2);alert("TP %100 LONG @$"+t.tp+" PnL:$"+pnl);return{...t,status:"CLOSED",exitPrice:t.tp,exitDate:now,pnl,rr:+((t.tp-t.entry)/(t.entry-t.stop)).toFixed(2),notes:(t.notes||"")+" |TP"};}}
         }
@@ -373,8 +383,32 @@ export default function App(){
         const fs=(data.layer_budget?.final_scalar||1.0)*expiryScalar,risk2=10000*0.02*2*fs;
         // Pozitif duvara yakınsa yeni LONG açma
         if(nearPosWall&&!inNegPocket){console.log("[GDIVE] Pozitif duvara yakın - LONG açılmıyor");return;}
-        if(bull){const e=s,sp=data.put_support,tp2=data.call_resistance,sz=+(risk2/Math.abs(e-sp)).toFixed(4);const tr={id:Date.now(),date:new Date().toISOString().slice(0,16).replace("T"," "),dir:"LONG",entry:e,stop:sp,tp:tp2,size:sz,regime:reg,signal:"Auto·L·"+reg,notes:"Auto LONG GEX:"+data.total_net_gex+"M scalar:"+fs,status:"OPEN",pnl:null,rr:null,exitPrice:null,exitDate:null,partialClosed:false};localStorage.setItem(JKEY,JSON.stringify([tr,...updated]));alert("AUTO LONG @$"+e+" Stop:$"+sp+" TP:$"+tp2);}
-        else if(bear){const e=s,sp=data.call_resistance,tp2=data.put_support,sz=+(risk2/Math.abs(e-sp)).toFixed(4);const tr={id:Date.now(),date:new Date().toISOString().slice(0,16).replace("T"," "),dir:"SHORT",entry:e,stop:sp,tp:tp2,size:sz,regime:reg,signal:"Auto·S·"+reg,notes:"Auto SHORT GEX:"+data.total_net_gex+"M scalar:"+fs,status:"OPEN",pnl:null,rr:null,exitPrice:null,exitDate:null,partialClosed:false};localStorage.setItem(JKEY,JSON.stringify([tr,...updated]));alert("AUTO SHORT @$"+e+" Stop:$"+sp+" TP:$"+tp2);}
+        if(bull){
+          const e=s;
+          const sp=data.put_support;
+          // Expiry haftasında TP = Max Pain, normal = Call Resistance
+          const tp2=expiryWeek&&maxPain?maxPain:data.call_resistance;
+          const sz=+(risk2/Math.abs(e-sp)).toFixed(4);
+          const notes="Auto LONG GEX:"+data.total_net_gex+"M scalar:"+fs+(expiryWeek?" [Expiry Haftası TP=MaxPain "+maxPain+"]":"")+(data.term_shape==="BACKWARDATION"?" [Backwardation]":"");
+          const tr={id:Date.now(),date:new Date().toISOString().slice(0,16).replace("T"," "),dir:"LONG",entry:e,stop:sp,tp:tp2,size:sz,regime:reg,signal:"Auto·L·"+reg+(expiryWeek?"·Expiry":""),notes,status:"OPEN",pnl:null,rr:null,exitPrice:null,exitDate:null,partialClosed:false};
+          localStorage.setItem(JKEY,JSON.stringify([tr,...updated]));
+          alert("AUTO LONG @$"+e+" Stop:$"+sp+" TP:$"+tp2+(expiryWeek?" [Expiry TP=MaxPain]":""));
+        }
+        else if(bear){
+          const e=s;
+          // SHORT için en yakın negatif cep TP olabilir
+          const negPocketTP=data.neg_pockets&&data.neg_pockets.length>1?data.neg_pockets[1].strike:null;
+          const tp2=expiryWeek&&maxPain?maxPain:negPocketTP||data.put_support;
+          // Backwardation'da stop %20 daha geniş
+          const backwardation=data.term_shape==="BACKWARDATION";
+          const stopDist=Math.abs(e-data.call_resistance)*(backwardation?1.2:1.0);
+          const sp=e+stopDist;
+          const sz=+(risk2/Math.abs(e-sp)).toFixed(4);
+          const notes="Auto SHORT GEX:"+data.total_net_gex+"M scalar:"+fs+(backwardation?" [Backwardation +%20 stop]":"")+(inNegPocket?" [Neg Pocket Aktif]":"");
+          const tr={id:Date.now(),date:new Date().toISOString().slice(0,16).replace("T"," "),dir:"SHORT",entry:e,stop:sp,tp:tp2,size:sz,regime:reg,signal:"Auto·S·"+reg+(inNegPocket?"·NegPocket":""),notes,status:"OPEN",pnl:null,rr:null,exitPrice:null,exitDate:null,partialClosed:false};
+          localStorage.setItem(JKEY,JSON.stringify([tr,...updated]));
+          alert("AUTO SHORT @$"+e+" Stop:$"+sp.toFixed(0)+" TP:$"+tp2+(backwardation?" [Backwardation]":""));
+        }
       }
     }catch(e){console.error("pm",e);}
   },[data,conf]);

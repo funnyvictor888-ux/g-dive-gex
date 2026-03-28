@@ -478,6 +478,36 @@ export default function App(){
         <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 18px",borderLeft:`4px solid ${C.blue}`}}>
           <LayerHead num="2" title="Opsiyon Piyasası — Ne Fiyatlanıyor?" subtitle="GEX haritası, IV durumu, term structure ve MenthorQ kurumsal akış analizi" status={`IV ${d.iv_rank?.toFixed(0)}%`} statusColor={d.iv_rank>70?C.red:d.iv_rank>40?C.gold:C.green}/>
 
+          {d.gamma_analysis&&(
+            <div style={{background:d.gamma_analysis.regime==="POSITIVE_GAMMA"?"#002a1a":d.gamma_analysis.regime==="FLIP_ZONE"?"#2a1e00":"#2a0010",border:"1px solid "+(d.gamma_analysis.regime==="POSITIVE_GAMMA"?"#00e59940":d.gamma_analysis.regime==="FLIP_ZONE"?"#ffbe2e40":"#ff3d5a40"),borderRadius:8,padding:"12px 16px",marginBottom:12}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                <div style={{display:"flex",alignItems:"center",gap:10}}>
+                  <div style={{width:10,height:10,borderRadius:"50%",background:d.gamma_analysis.regime==="POSITIVE_GAMMA"?"#00e599":d.gamma_analysis.regime==="FLIP_ZONE"?"#ffbe2e":"#ff3d5a"}}/>
+                  <span style={{color:d.gamma_analysis.regime==="POSITIVE_GAMMA"?"#00e599":d.gamma_analysis.regime==="FLIP_ZONE"?"#ffbe2e":"#ff3d5a",fontWeight:700,fontSize:11}}>
+                    {d.gamma_analysis.regime==="POSITIVE_GAMMA"?"Pozitif Gamma — Dealer Söndürür":d.gamma_analysis.regime==="FLIP_ZONE"?"FLIP BÖLGESİ — Yeni Trade Açma":"Negatif Gamma — Dealer Büyütür"}
+                  </span>
+                </div>
+                <div style={{display:"flex",gap:8}}>
+                  {d.max_pain&&<span style={{color:"#9d7aff",fontSize:9,background:"#9d7aff15",border:"1px solid #9d7aff30",padding:"2px 8px",borderRadius:4}}>Max Pain ${d.max_pain.toLocaleString()}</span>}
+                  {d.expiry&&<span style={{color:d.expiry.expiry_week?"#ffbe2e":"#3d5470",fontSize:9,background:"#ffffff08",border:"1px solid #1a2535",padding:"2px 8px",borderRadius:4}}>Expiry {d.expiry.days_to_expiry}g</span>}
+                </div>
+              </div>
+              <div style={{color:"#dce8f5",fontSize:11,lineHeight:1.7,marginBottom:8}}>{d.gamma_analysis.description}</div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>
+                {[
+                  {l:"Flip Noktası",v:d.flip_point?"$"+d.flip_point.toLocaleString("en-US",{maximumFractionDigits:0}):"—",c:"#ffbe2e"},
+                  {l:"Flip Mesafesi",v:d.gamma_analysis.flip_distance_pct?.toFixed(1)+"%",c:d.gamma_analysis.flip_near?"#ff3d5a":d.gamma_analysis.flip_distance_pct<5?"#ffbe2e":"#00e599"},
+                  {l:"Max Pain",v:d.max_pain?"$"+d.max_pain.toLocaleString():"—",c:"#9d7aff"},
+                  {l:"Expiry",v:d.expiry?d.expiry.days_to_expiry+"g kaldı":"—",c:d.expiry?.expiry_week?"#ffbe2e":"#3d5470"},
+                ].map((s,i)=>(
+                  <div key={i} style={{padding:"6px 8px",background:"rgba(0,0,0,0.3)",borderRadius:5}}>
+                    <div style={{color:"#3d5470",fontSize:8.5,marginBottom:2}}>{s.l}</div>
+                    <div style={{color:s.c,fontWeight:700,fontFamily:"monospace",fontSize:11}}>{s.v}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:14}}>
             {[
               {l:"Front IV",v:pct(d.front_iv),c:d.front_iv>65?C.red:d.front_iv>45?C.gold:C.green,sub:"30 günlük ATM"},

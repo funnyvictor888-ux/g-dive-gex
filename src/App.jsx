@@ -332,9 +332,22 @@ export default function App(){
       const trades=JSON.parse(localStorage.getItem(JKEY)||"[]");
       const s=data.spot,reg=data.regime;
       const bull=["IDEAL_LONG","BULLISH_HIGH_VOL"].includes(reg)&&s>data.hvl&&data.total_net_gex>0;
+      const ga=data.gamma_analysis||{};
+      const flipNear=ga.flip_near||false;
+      const inNegPocket=ga.in_neg_pocket||false;
+      const nearPosWall=ga.near_pos_wall||false;
+      const expD=data.expiry||{};
+      const expiryDay=expD.expiry_day||false;
+      const expiryWeek=expD.expiry_week||false;
+      const expiryScalar=expD.expiry_scalar||1.0;
+      const maxPain=data.max_pain||null;
       const bear=["BEARISH_VOLATILE","BEARISH_LOW_VOL","HIGH_RISK"].includes(reg)&&s<data.hvl&&data.total_net_gex<0;
       const rs=getRiskStatus(trades);setRisk(rs);
       if(rs.killSwitch) return;
+      // Expiry günü → sadece yönetim, yeni trade açma
+      if(expiryDay){console.log("[GDIVE] Expiry günü - yeni trade açılmıyor");return;}
+      // Flip noktasına çok yakın → yeni trade açma
+      if(flipNear){console.log("[GDIVE] Flip noktasına yakın - yeni trade açılmıyor");return;}
       const confOK=!conf||(conf&&conf.score>=-10);
       const ivOK=(data.iv_rank||0)<80;
       let changed=false;
@@ -357,7 +370,9 @@ export default function App(){
       const today=new Date().toISOString().slice(0,10);
       const hasOpen=updated.find(t=>t.date?.startsWith(today)&&t.status==="OPEN");
       if(!hasOpen&&confOK&&ivOK){
-        const fs=data.layer_budget?.final_scalar||1.0,risk2=10000*0.02*2*fs;
+        const fs=(data.layer_budget?.final_scalar||1.0)*expiryScalar,risk2=10000*0.02*2*fs;
+        // Pozitif duvara yakınsa yeni LONG açma
+        if(nearPosWall&&!inNegPocket){console.log("[GDIVE] Pozitif duvara yakın - LONG açılmıyor");return;}
         if(bull){const e=s,sp=data.put_support,tp2=data.call_resistance,sz=+(risk2/Math.abs(e-sp)).toFixed(4);const tr={id:Date.now(),date:new Date().toISOString().slice(0,16).replace("T"," "),dir:"LONG",entry:e,stop:sp,tp:tp2,size:sz,regime:reg,signal:"Auto·L·"+reg,notes:"Auto LONG GEX:"+data.total_net_gex+"M scalar:"+fs,status:"OPEN",pnl:null,rr:null,exitPrice:null,exitDate:null,partialClosed:false};localStorage.setItem(JKEY,JSON.stringify([tr,...updated]));alert("AUTO LONG @$"+e+" Stop:$"+sp+" TP:$"+tp2);}
         else if(bear){const e=s,sp=data.call_resistance,tp2=data.put_support,sz=+(risk2/Math.abs(e-sp)).toFixed(4);const tr={id:Date.now(),date:new Date().toISOString().slice(0,16).replace("T"," "),dir:"SHORT",entry:e,stop:sp,tp:tp2,size:sz,regime:reg,signal:"Auto·S·"+reg,notes:"Auto SHORT GEX:"+data.total_net_gex+"M scalar:"+fs,status:"OPEN",pnl:null,rr:null,exitPrice:null,exitDate:null,partialClosed:false};localStorage.setItem(JKEY,JSON.stringify([tr,...updated]));alert("AUTO SHORT @$"+e+" Stop:$"+sp+" TP:$"+tp2);}
       }

@@ -157,6 +157,150 @@ def calc_gex(spot, summaries):
     return result
 
 # ── Ana veri paketi ────────────────────────────────────────────────
+
+# ── Gamma Regime Analyzer ─────────────────────────────────────────
+import datetime as _dt
+
+def find_flip_point(gex_by_strike):
+    """GEX'in negatiften pozitife geçtiği strike = HVL/Flip"""
+    nodes = sorted(gex_by_strike.items())
+    flip = None
+    for i in range(len(nodes)-1):
+        if nodes[i][1] < 0 and nodes[i+1][1] > 0:
+            flip = (nodes[i][0] + nodes[i+1][0]) / 2
+    return flip
+
+def find_neg_pockets(gex_by_strike, spot, threshold=-0.05):
+    """En derin negatif GEX bölgeleri"""
+    nodes = sorted(gex_by_strike.items())
+    pockets = []
+    for strike, gex in nodes:
+        if gex < 0 and abs(gex) > abs(threshold):
+            pockets.append({"strike": strike, "gex": round(gex/1e6, 2)})
+    return sorted(pockets, key=lambda x: x["gex"])[:5]
+
+def find_pos_walls(gex_by_strike, spot, threshold=0.05):
+    """En güçlü pozitif GEX duvarları"""
+    nodes = sorted(gex_by_strike.items())
+    walls = []
+    for strike, gex in nodes:
+        if gex > 0 and gex > threshold:
+            walls.append({"strike": strike, "gex": round(gex/1e6, 2)})
+    return sorted(walls, key=lambda x: -x["gex"])[:5]
+
+def calc_max_pain(summaries):
+    """Max Pain: En fazla opsiyonun değersiz kalacağı fiyat"""
+    from collections import defaultdict
+    call_oi = defaultdict(float)
+    put_oi  = defaultdict(float)
+    for s in summaries:
+        parts = s.get("instrument_name","").split("-")
+        if len(parts) < 4: continue
+        try:
+            strike = float(parts[2])
+            oi = float(s.get("open_interest",0) or 0)
+            if parts[3] == "C": call_oi[strike] += oi
+            else: put_oi[strike] += oi
+        except: continue
+    
+    strikes = sorted(set(list(call_oi.keys()) + list(put_oi.keys())))
+    if not strikes: return None
+    
+    min_pain = float("inf")
+    max_pain_strike = strikes[0]
+    for s in strikes:
+        call_pain = sum(max(0, s - k) * v for k, v in call_oi.items())
+        put_pain  = sum(max(0, k - s) * v for k, v in put_oi.items())
+        total = call_pain + put_pain
+        if total < min_pain:
+            min_pain = total
+            max_pain_strike = s
+    return max_pain_strike
+
+def get_expiry_info():
+    """Yaklaşan expiry bilgisi"""
+    today = _dt.date.today()
+    # Her ayın son Cuması
+    def last_friday(year, month):
+        import calendar
+        last_day = calendar.monthrange(year, month)[1]
+        d = _dt.date(year, month, last_day)
+        while d.weekday() != 4:  # 4 = Friday
+            d -= _dt.timedelta(days=1)
+        return d
+    
+    # Bu ay ve sonraki ay
+    expiries = []
+    for offset in range(3):
+        m = (today.month + offset - 1) % 12 + 1
+        y = today.year + (today.month + offset - 1) // 12
+        exp = last_friday(y, m)
+        if exp >= today:
+            expiries.append(exp)
+    
+    if not expiries: return {}
+    
+    nearest = expiries[0]
+    days_to_expiry = (nearest - today).days
+    
+    return {
+        "nearest_expiry": nearest.strftime("%Y-%m-%d"),
+        "days_to_expiry": days_to_expiry,
+        "expiry_week": days_to_expiry <= 3,
+        "expiry_day": days_to_expiry == 0,
+        "expiry_scalar": 0.5 if days_to_expiry <= 3 else 1.0,
+    }
+
+def gamma_regime_analysis(spot, flip_point, gex_by_strike):
+    """Tam gamma rejimi analizi"""
+    if not flip_point or not spot:
+        return {"regime": "UNKNOWN", "in_positive": True, "flip_distance_pct": 0}
+    
+    in_positive = spot > flip_point
+    flip_dist = abs(spot - flip_point) / spot * 100
+    flip_near = flip_dist < 2.0  # %2 içinde = tehlike
+    
+    # En yakın negatif cep
+    neg_nodes = [(k,v) for k,v in gex_by_strike.items() if v < 0]
+    nearest_neg = min(neg_nodes, key=lambda x: abs(x[0]-spot), default=None)
+    in_neg_pocket = nearest_neg and abs(nearest_neg[0]-spot)/spot < 0.015
+    
+    # En yakın pozitif duvar
+    pos_nodes = [(k,v) for k,v in gex_by_strike.items() if v > 0 and k > spot]
+    nearest_wall = min(pos_nodes, key=lambda x: abs(x[0]-spot), default=None)
+    near_pos_wall = nearest_wall and abs(nearest_wall[0]-spot)/spot < 0.03
+    
+    if in_positive and not flip_near:
+        regime = "POSITIVE_GAMMA"
+        color = "green"
+        desc = f"Dealer söndürür. Spot {spot:.0f} > Flip {flip_point:.0f}. Pin mantığı çalışır."
+    elif flip_near:
+        regime = "FLIP_ZONE"
+        color = "orange"
+        desc = f"TEHLİKE: Flip noktasına {flip_dist:.1f}% yakın! Yeni trade açma."
+    elif in_neg_pocket:
+        regime = "NEG_POCKET"
+        color = "red"
+        desc = f"Negatif gamma cebi! Dealer düşüşü büyütür. Stop genişlet."
+    else:
+        regime = "NEGATIVE_GAMMA"
+        color = "red"
+        desc = f"Dealer büyütür. Spot {spot:.0f} < Flip {flip_point:.0f}. Volatilite modu."
+    
+    return {
+        "regime": regime,
+        "color": color,
+        "description": desc,
+        "in_positive": in_positive,
+        "flip_point": flip_point,
+        "flip_distance_pct": round(flip_dist, 2),
+        "flip_near": flip_near,
+        "in_neg_pocket": in_neg_pocket,
+        "near_pos_wall": near_pos_wall,
+        "nearest_wall_strike": nearest_wall[0] if nearest_wall else None,
+        "nearest_neg_strike": nearest_neg[0] if nearest_neg else None,
+    }
+
 def build_menthorq_state(spot, summaries):
     total_call_oi=0.0; total_put_oi=0.0
     weighted_bias=0.0; weighted_count=0.0
@@ -305,6 +449,8 @@ def build_data():
         return None
 
     print(f"[INFO] Spot: {spot:.0f}, Options: {len(summaries)}")
+    expiry_info = get_expiry_info()
+    max_pain = calc_max_pain(summaries)
     # Multi-asset data
     assets = fetch_multi_asset()
     ma_weights = compute_multi_asset_signals(assets, 1.0)
@@ -336,6 +482,10 @@ def build_data():
         hvl = min(pos_nodes, key=lambda x: abs(x["strike"]-spot))["strike"]
 
     # Call resistance / Put support
+    flip_point = find_flip_point(mq["gex_by_strike"]) if mq.get("gex_by_strike") else hvl
+    neg_pockets = find_neg_pockets(mq.get("gex_by_strike",{}), spot)
+    pos_walls_data = find_pos_walls(mq.get("gex_by_strike",{}), spot)
+    gamma_regime_info = gamma_regime_analysis(spot, flip_point, mq.get("gex_by_strike",{}))
     call_resistance = call_walls[0] if call_walls else round(spot * 1.1 / 1000) * 1000
     put_support     = put_walls[0]  if put_walls  else round(spot * 0.9 / 1000) * 1000
 
@@ -411,7 +561,7 @@ def build_data():
         "funding": {"score":0,"scalar":1.0,"regime":"neutral"},
         "layer_budget": {"final_scalar":round(mq["scalar"],4),"menthorq_scalar":mq["scalar"],"funding_scalar":1.0},
         "multi_asset": {"weights": ma_weights, "realized_vol": round(rvol,4), "posture": posture, "vol_target": 0.20},
-        "_source": "deribit_live",
+        "gamma_analysis": gamma_regime_info,"neg_pockets": neg_pockets,"pos_walls_list": pos_walls_data,"flip_point": flip_point,"max_pain": max_pain,"expiry": expiry_info,"_source": "deribit_live",
         "_elapsed": elapsed,
     }
 

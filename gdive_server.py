@@ -516,7 +516,7 @@ def build_data():
     pc_ratio = round(put_oi / call_oi, 3) if call_oi > 0 else 1.0
 
     # Regime
-    gamma_regime = "LONG_GAMMA" if total_net_gex > 0 else "SHORT_GAMMA"
+    gamma_regime = "LONG_GAMMA" if spot > flip_point else ("TRANSITION" if abs(spot-flip_point)/max(spot,1)<0.02 else "SHORT_GAMMA")
     if total_net_gex > 0 and front_iv < 60:
         regime = "IDEAL_LONG" if spot > hvl else "BULLISH_HIGH_VOL"
     elif total_net_gex > 0 and front_iv >= 60:

@@ -462,7 +462,7 @@ export default function App(){
           </div>
 
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            <InsightBox icon="◆" type={aboveHVL?"bull":"warn"} text={aboveHVL?`Spot ${fmtK(d.spot)}, HVL ${fmtK(d.hvl)} üstünde. Dealer negatif gamma hedge yapıyor — hareketler söndürülüyor, trend devam eğiliminde.`:`Spot ${fmtK(d.spot)}, HVL ${fmtK(d.hvl)} altında. Dealer pozitif gamma hedge yapıyor — volatilite büyüme eğiliminde, sert hareketler mümkün.`}/>
+            <InsightBox icon="◆" type={aboveHVL?"bull":"warn"} text={aboveHVL?`Spot ${fmtK(d.spot)}, HVL ${fmtK(d.hvl)} üstünde. Dealer negatif gamma hedge yapıyor — hareketler söndürülüyor, trend devam eğiliminde.`:`Spot ${fmtK(d.spot)}, HVL ${fmtK(d.hvl)} altında. Dealer NEGATİF gamma bölgesinde — fiyat düşünce satar (düşüşü büyütür), yükselince alır. Volatilite üretir.`}/>
             <InsightBox icon="◆" type={gp?"bull":"bear"} text={gp?`Net GEX +${d.total_net_gex?.toFixed(0)}M — Piyasada call ağırlıklı open interest hakim. Dealer, fiyat yükselince satar (söndürür).`:`Net GEX ${d.total_net_gex?.toFixed(0)}M — Put baskısı hakim. Dealer, fiyat düşünce alır (büyütür). Dikkatli ol.`}/>
           </div>
         </div>

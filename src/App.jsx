@@ -450,7 +450,7 @@ export default function App(){
             {[
               {l:"BTC Spot",v:fmtK(d.spot),c:C.blue,sub:"Son işlem fiyatı"},
               {l:"High Vol Level",v:fmtK(d.hvl),c:C.gold,sub:`Spot ${aboveHVL?`+${distHVL}% üstünde`:`-${distHVL}% altında`}`},
-              {l:"Gamma Rejimi",v:gp?"LONG GAMMA":"SHORT GAMMA",c:gp?C.green:C.red,sub:gp?"Dealer vol söndürür":"Dealer vol büyütür"},
+              {l:"Gamma Rejimi",v:d.gamma_regime==="LONG_GAMMA"?"LONG GAMMA":d.gamma_regime==="TRANSITION"?"GEÇİŞ":"SHORT GAMMA",c:d.gamma_regime==="LONG_GAMMA"?C.green:d.gamma_regime==="TRANSITION"?C.gold:C.red,sub:d.gamma_regime==="LONG_GAMMA"?"Dealer vol söndürür":d.gamma_regime==="TRANSITION"?"Flip yakını dikkat":"Dealer vol büyütür"},
               {l:"Net GEX",v:`${gp?"+":""}${d.total_net_gex?.toFixed(0)}M`,c:gp?C.green:C.orange,sub:"Toplam dealer gamma"},
             ].map((s,i)=>(
               <div key={i} style={{padding:"10px 12px",background:C.card2,border:`1px solid ${C.border}`,borderRadius:7}}>

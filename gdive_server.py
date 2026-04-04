@@ -273,7 +273,8 @@ def gamma_regime_analysis(spot, flip_point, gex_by_strike):
     if in_positive and not flip_near:
         regime = "POSITIVE_GAMMA"
         color = "green"
-        desc = f"Dealer söndürür. Spot {spot:.0f} > Flip {flip_point:.0f}. Pin mantığı çalışır."
+        total_gex = sum(gex_by_strike.values())/1e6
+        desc = f"Pozitif Gamma: Spot {spot:.0f} > HVL {flip_point:.0f}, GEX +{total_gex:.0f}M. Dealer sondurur, LONG bolgesi."
     elif flip_near:
         regime = "FLIP_ZONE"
         color = "orange"
@@ -285,7 +286,13 @@ def gamma_regime_analysis(spot, flip_point, gex_by_strike):
     else:
         regime = "NEGATIVE_GAMMA"
         color = "red"
-        desc = f"Dealer büyütür. Spot {spot:.0f} < Flip {flip_point:.0f}. Volatilite modu."
+        total_gex2 = sum(gex_by_strike.values())/1e6
+        if total_gex2 > 0:
+            regime="MIXED_NEGATIVE"
+            color="orange"
+            desc=f"Gecis: GEX +{total_gex2:.0f}M pozitif ama Spot {spot:.0f} < HVL {flip_point:.0f}. HVL kirilmasini bekle."
+        else:
+            desc = f"Negatif Gamma: Spot {spot:.0f} < HVL {flip_point:.0f}, GEX {total_gex2:.0f}M. Dealer buyutur, SHORT bolgesi."
     
     return {
         "regime": regime,

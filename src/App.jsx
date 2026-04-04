@@ -484,7 +484,7 @@ export default function App(){
                 <div style={{display:"flex",alignItems:"center",gap:10}}>
                   <div style={{width:10,height:10,borderRadius:"50%",background:d.gamma_analysis.regime==="POSITIVE_GAMMA"?"#00e599":d.gamma_analysis.regime==="FLIP_ZONE"?"#ffbe2e":"#ff3d5a"}}/>
                   <span style={{color:d.gamma_analysis.regime==="POSITIVE_GAMMA"?"#00e599":d.gamma_analysis.regime==="FLIP_ZONE"?"#ffbe2e":"#ff3d5a",fontWeight:700,fontSize:11}}>
-                    {d.gamma_analysis.regime==="POSITIVE_GAMMA"?"Pozitif Gamma — Dealer Söndürür":d.gamma_analysis.regime==="FLIP_ZONE"?"FLIP BÖLGESİ — Yeni Trade Açma":"Negatif Gamma — Dealer Büyütür"}
+                    {d.gamma_analysis.regime==="POSITIVE_GAMMA"?"✓ Pozitif Gamma — LONG Bölge":d.gamma_analysis.regime==="FLIP_ZONE"?"⚡ FLIP — Trade Açma":d.gamma_analysis.regime==="MIXED_NEGATIVE"?"⚡ Geçiş — GEX Pozitif ama Spot HVL Altında (Bekle)":"● Negatif Gamma — SHORT Bölge"}
                   </span>
                 </div>
                 <div style={{display:"flex",gap:8}}>

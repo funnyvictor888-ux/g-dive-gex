@@ -1,4 +1,4 @@
-{score:d.momentum_score??3,label:"Momentum Score",meaning:d.momentum_score>=4&&aboveHVL?"Guclu yukari momentum":d.momentum_score>=3?"Notr - HVL kirilmasi izleniyor":aboveHVL?"Zayif ama HVL ustunde":"Spot HVL altinda - yukari kirilisi bekle",color:d.momentum_score>=4?C.green:d.momentum_score>=3?C.gold:aboveHVL?C.orange:C.red,detail:`Spot ${aboveHVL?">":"<"} HVL ${fmtK(d.hvl)} - Gamma: ${d.gamma_regime==="LONG_GAMMA"?"Pozitif":"Negatif"}`},import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 const SERVER_URL = window.location.hostname === "localhost"
   ? "http://localhost:7432"

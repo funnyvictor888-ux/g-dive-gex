@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+{score:d.momentum_score??3,label:"Momentum Score",meaning:d.momentum_score>=4&&aboveHVL?"Guclu yukari momentum":d.momentum_score>=3?"Notr - HVL kirilmasi izleniyor":aboveHVL?"Zayif ama HVL ustunde":"Spot HVL altinda - yukari kirilisi bekle",color:d.momentum_score>=4?C.green:d.momentum_score>=3?C.gold:aboveHVL?C.orange:C.red,detail:`Spot ${aboveHVL?">":"<"} HVL ${fmtK(d.hvl)} - Gamma: ${d.gamma_regime==="LONG_GAMMA"?"Pozitif":"Negatif"}`},import { useState, useEffect, useCallback } from "react";
 
 const SERVER_URL = window.location.hostname === "localhost"
   ? "http://localhost:7432"
@@ -609,7 +609,7 @@ export default function App(){
 
           <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:14}}>
             {[
-              {score:d.option_score??0,label:"Option Score",meaning:d.option_score>=4?"Kurumsal opsiyonlar bullish pozisyonda":d.option_score>=3?"Nötr opsiyon akışı":"Bearish opsiyon yapısı",color:d.option_score>=4?C.green:d.option_score>=3?C.gold:C.red,detail:`P/C: ${d.pc_ratio?.toFixed(2)} · GEX: ${gp?"Pozitif":"Negatif"}`},
+              {score:d.option_score??0,label:"Option Score",meaning:aboveHVL&&d.option_score>=4?"Bullish + HVL ustunde":!aboveHVL&&d.option_score>=4?"OI bullish ama Spot HVL altinda - bekleme":d.option_score>=3?"Notr opsiyon akisi":"Bearish opsiyon yapisi",color:d.option_score>=4&&aboveHVL?C.green:d.option_score>=4?C.gold:d.option_score>=3?C.gold:C.red,detail:`P/C: ${d.pc_ratio?.toFixed(2)} - GEX: ${gp?"+":""}${d.total_net_gex?.toFixed(0)}M - Gamma: ${d.gamma_regime==="LONG_GAMMA"?"Pozitif":"Negatif"}`},
               {score:d.vol_score??0,label:"Volatilite Score",meaning:d.vol_score>=4?"Yüksek IV — Piyasa büyük hareket fiyatlıyor":d.vol_score>=3?"Orta volatilite":"Düşük IV, hareket beklentisi yok",color:d.vol_score>=4?C.orange:d.vol_score>=3?C.gold:C.green,detail:`Front IV: ${d.front_iv?.toFixed(1)}% · Rank: ${d.iv_rank?.toFixed(0)}%`},
               {score:d.momentum_score??3,label:"Momentum Score",meaning:d.momentum_score>=4?"Güçlü yukarı momentum":d.momentum_score>=3?"Nötr momentum":"Bearish momentum",color:d.momentum_score>=4?C.green:d.momentum_score>=3?C.gold:C.red,detail:`Spot ${aboveHVL?">":"<"} HVL · ${d.regime?.replace("_"," ")}`},
             ].map((s,i)=>(

@@ -380,12 +380,15 @@ export default function App(){
       const today=new Date().toISOString().slice(0,10);
       const hasOpen=updated.find(t=>t.date?.startsWith(today)&&t.status==="OPEN");
       if(!hasOpen&&confOK&&ivOK){
-        const fs=(data.layer_budget?.final_scalar||1.0)*expiryScalar,risk2=10000*0.02*2*fs;
+        const fs=(data.layer_budget?.final_scalar||1.0)*expiryScalar,risk2=10000*0.02*3*fs;
         // Pozitif duvara yakınsa yeni LONG açma
         if(nearPosWall&&!inNegPocket){console.log("[GDIVE] Pozitif duvara yakın - LONG açılmıyor");return;}
         if(bull){
           const e=s;
-          const sp=data.put_support;
+          // Dinamik stop: GEX flip noktasi veya max %5 asagi
+          const flipStop=data.flip_point?data.flip_point*0.995:null;
+          const pctStop=e*0.95;
+          const sp=flipStop?Math.max(flipStop,pctStop):Math.max(data.put_support,pctStop);
           // Expiry haftasında TP = Max Pain, normal = Call Resistance
           const tp2=expiryWeek&&maxPain?maxPain:data.call_resistance;
           const sz=+(risk2/Math.abs(e-sp)).toFixed(4);

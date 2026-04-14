@@ -156,6 +156,24 @@ function OpenCard({trade,price,sData,onClose,onDelete}){
           <div style={{color:"#dce8f5",fontSize:11,lineHeight:1.7}}>{trade.notes||"Sistem otomatik sinyal"}</div>
           {trade.signal&&<div style={{color:"#9d7aff",fontSize:9.5,marginTop:4}}>Sinyal: {trade.signal}</div>}
           <div style={{color:"#3d5470",fontSize:9,marginTop:3}}>Regime: {trade.regime||"—"} · {trade.date}</div>
+      {sData&&(
+        <div style={{background:"rgba(0,0,0,0.2)",border:"1px solid #1a2535",borderRadius:7,padding:"10px 12px",marginTop:10}}>
+          <div style={{color:"#3d5470",fontSize:9,textTransform:"uppercase",marginBottom:8}}>Thesis Kontrol Listesi</div>
+          <div style={{display:"flex",flexDirection:"column",gap:5}}>
+            {[
+              {l:"GEX Flip Yakın mı?",fail:sData.flip_point&&Math.abs(sData.spot-sData.flip_point)/sData.spot<0.02,ok:`Flip $${sData.flip_point?.toLocaleString()} — ${(Math.abs((sData.spot-sData.flip_point)/sData.spot)*100).toFixed(1)}% uzak`,warn:"Flip noktasına yakın — gamma değişebilir"},
+              {l:"Gamma Rejimi Uygun mu?",fail:trade.dir==="LONG"&&sData.gamma_regime==="SHORT_GAMMA",ok:`${sData.gamma_regime} — uygun`,warn:`${sData.gamma_regime} — ${trade.dir} yönüyle çelişiyor!`},
+              {l:"Regime Bozuldu mu?",fail:trade.dir==="LONG"&&["BEARISH_VOLATILE","BEARISH_LOW_VOL","HIGH_RISK"].includes(sData.regime),ok:`${sData.regime?.replace(/_/g," ")} — devam`,warn:`${sData.regime?.replace(/_/g," ")} — thesis geçersiz!`},
+              {l:"Max Pain Durumu",fail:false,ok:sData.max_pain?`Max Pain $${sData.max_pain?.toLocaleString()} · Spot ${sData.spot>sData.max_pain?"üstünde":"altında"}`:"Hesaplanıyor",warn:""},
+            ].map((item,i)=>(
+              <div key={i} style={{display:"flex",gap:8,padding:"4px 6px",background:item.fail?"#ff3d5a08":"#00e59906",border:"1px solid "+(item.fail?"#ff3d5a20":"#00e59912"),borderRadius:4}}>
+                <span style={{color:item.fail?"#ff3d5a":"#00e599",fontSize:11,flexShrink:0}}>{item.fail?"✗":"✓"}</span>
+                <div><div style={{color:item.fail?"#ff3d5a":"#00e599",fontSize:9.5,fontWeight:700}}>{item.l}</div><div style={{color:"#3d5470",fontSize:9}}>{item.fail?item.warn:item.ok}</div></div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
         </div>
         {adv&&<div style={{background:adv.c+"08",border:"1px solid "+adv.c+"30",borderLeft:"3px solid "+adv.c,borderRadius:8,padding:"10px 12px",marginBottom:12,color:"#dce8f5",fontSize:11,lineHeight:1.6}}>{adv.t}</div>}
         <div style={{display:"flex",gap:8,borderTop:"1px solid #1a2535",paddingTop:12}}>

@@ -344,10 +344,16 @@ export default function App(){
       const bear=["BEARISH_VOLATILE","BEARISH_LOW_VOL","HIGH_RISK"].includes(reg)&&s<data.hvl&&data.total_net_gex<0;
       const rs=getRiskStatus(trades);setRisk(rs);
       if(rs.killSwitch) return;
-      // Expiry günü → sadece yönetim, yeni trade açma
       if(expiryDay){console.log("[GDIVE] Expiry günü - yeni trade açılmıyor");return;}
-      // Flip noktasına çok yakın → yeni trade açma
       if(flipNear){console.log("[GDIVE] Flip noktasına yakın - yeni trade açılmıyor");return;}
+      
+      // THESIS INVALIDATION CHECKS
+      // 1. Gamma rejimi yönle çelişiyor mu?
+      const gammaConflict = (bullish && data.gamma_regime==="SHORT_GAMMA") || (bearish && data.gamma_regime==="LONG_GAMMA");
+      if(gammaConflict){console.log("[GDIVE] Gamma rejimi trade yönüyle çelişiyor - trade açılmıyor");return;}
+      // 2. Regime açık pozisyonla çelişiyor mu? (pozisyon yönetiminde zaten var ama yeni trade için de kontrol)
+      const regimeConflict = bullish && ["BEARISH_VOLATILE","BEARISH_LOW_VOL","HIGH_RISK"].includes(data.regime);
+      if(regimeConflict){console.log("[GDIVE] Regime bearish, bull trade açılmıyor");return;}
       const confOK=!conf||(conf&&conf.score>=-10);
       const ivOK=(data.iv_rank||0)<80;
       let changed=false;

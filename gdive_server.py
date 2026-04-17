@@ -581,14 +581,30 @@ def build_data():
 # ── Server-Side Trade Management ──────────────────────────────────
 TRADES_FILE = Path("trades.json")
 
+import json as _json
+
+TRADES_FILE = "/tmp/gdive_trades.json"
+
+def load_trades_from_disk():
+    try:
+        if os.path.exists(TRADES_FILE):
+            return _json.load(open(TRADES_FILE))
+        return []
+    except:
+        return []
+
+def save_trades_to_disk(trades):
+    try:
+        _json.dump(trades, open(TRADES_FILE, "w"))
+    except Exception as e:
+        print(f"[ERR] Trade save: {e}")
+
 def load_trades():
-    if not TRADES_FILE.exists(): return []
-    try: return json.loads(TRADES_FILE.read_text())
-    except: return []
 
+    trades = load_trades_from_disk()
+    return trades
 def save_trades(trades):
-    TRADES_FILE.write_text(json.dumps(trades, indent=2))
-
+    save_trades_to_disk(trades)
 def check_and_manage_trades(data):
     if not data or data.get("_source") != "deribit_live": return
     trades = load_trades()

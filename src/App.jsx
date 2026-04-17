@@ -391,10 +391,9 @@ export default function App(){
         if(nearPosWall&&!inNegPocket){console.log("[GDIVE] Pozitif duvara yakın - LONG açılmıyor");return;}
         if(bull){
           const e=s;
-          // Dinamik stop: GEX flip noktasi veya max %5 asagi
-          const flipStop=data.flip_point?data.flip_point*0.995:null;
+          // Dinamik stop: Put support veya entry'nin %5 altı - hangisi yukardaysa
           const pctStop=e*0.95;
-          const sp=flipStop?Math.max(flipStop,pctStop):Math.max(data.put_support,pctStop);
+          const sp=Math.max(data.put_support||0, pctStop);
           // Expiry haftasında TP = Max Pain, normal = Call Resistance
           const tp2=expiryWeek&&maxPain?maxPain:data.call_resistance;
           const sz=+(risk2/Math.abs(e-sp)).toFixed(4);

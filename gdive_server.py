@@ -161,6 +161,27 @@ def calc_gex(spot, summaries):
 # ── Gamma Regime Analyzer ─────────────────────────────────────────
 import datetime as _dt
 
+
+def funding_manipulation_detector(funding_history, current_rate, lookback=48, threshold=3.0):
+    if len(funding_history) < 10:
+        return {"signal":"NEUTRAL","z_score":0,"alert":False,"description":"Yeterli veri yok","annualized_pct":current_rate*3*365*100}
+    import statistics
+    recent = funding_history[-lookback:]
+    mean = statistics.mean(recent)
+    std = statistics.stdev(recent) if len(recent)>1 else 1e-9
+    z = (current_rate - mean)/(std+1e-9)
+    if z > threshold:
+        return {"signal":"CONTRARIAN_LONG","z_score":round(z,3),"alert":True,"description":f"MANIPULATION: Pozitif spike (z={z:.1f}). Long flush edildi. Kontrarian LONG firsat.","annualized_pct":round(current_rate*3*365*100,2)}
+    elif z < -threshold:
+        return {"signal":"CONTRARIAN_SHORT","z_score":round(z,3),"alert":True,"description":f"MANIPULATION: Negatif spike (z={z:.1f}). Short flush edildi. Kontrarian SHORT firsat.","annualized_pct":round(current_rate*3*365*100,2)}
+    return {"signal":"NEUTRAL","z_score":round(z,3),"alert":False,"description":f"Normal funding. Z={z:.2f}","annualized_pct":round(current_rate*3*365*100,2)}
+
+def carry_arb_calculator(funding_annual_pct, borrow_rate_pct=5.0, fee=0.001):
+    net=(funding_annual_pct-borrow_rate_pct)/100-fee
+    return {"net_carry_pct":round((funding_annual_pct-borrow_rate_pct),2),"total_return_pct":round(net*100,2),"profitable":net>0,"break_even_funding_pct":round(borrow_rate_pct+fee*100,2),"verdict":"CARRY ARB ACIK" if net>0.08 else "DUSUK GETIRI" if net>0 else "KARLI DEGIL"}
+
+_funding_history = []
+
 def find_flip_point(gex_by_strike):
     """GEX'in negatiften pozitife geçtiği strike = HVL/Flip"""
     nodes = sorted(gex_by_strike.items())
@@ -573,7 +594,7 @@ def build_data():
         "funding": {"score":0,"scalar":1.0,"regime":"neutral"},
         "layer_budget": {"final_scalar":round(mq["scalar"],4),"menthorq_scalar":mq["scalar"],"funding_scalar":1.0},
         "multi_asset": {"weights": ma_weights, "realized_vol": round(rvol,4), "posture": posture, "vol_target": 0.20},
-        "gamma_analysis": gamma_regime_info,"neg_pockets": neg_pockets,"pos_walls_list": pos_walls_data,"flip_point": flip_point,"max_pain": max_pain,"expiry": expiry_info,"_source": "deribit_live",
+        "gamma_analysis": gamma_regime_info,"neg_pockets": neg_pockets,"pos_walls_list": pos_walls_data,"flip_point": flip_point,"max_pain": max_pain,"expiry": expiry_info,"funding_manipulation":funding_manip,"carry_arb":carry_arb,"_source": "deribit_live",
         "_elapsed": elapsed,
     }
 

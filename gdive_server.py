@@ -588,6 +588,11 @@ def build_data():
         "neg_gex_nodes": neg_nodes,
         "n_contracts": len(summaries),
         "menthorq": {"gamma_z":mq["gamma_z"],"dealer_bias":mq["dealer_bias"],"flow_score":mq["flow_score"],"scalar":mq["scalar"],"regime":mq["regime"],"score":mq["score"],"wall_adj":0.0},
+        # HyperTrend funding manipulation
+        _funding_history.append(mq.get("funding_rate",0))
+        if len(_funding_history)>96: _funding_history[:]=_funding_history[-96:]
+        funding_manip=funding_manipulation_detector(_funding_history,mq.get("funding_rate",0))
+        carry_arb=carry_arb_calculator(funding_manip.get("annualized_pct",0))
         "funding": {"score":0,"scalar":1.0,"regime":"neutral"},
         "layer_budget": {"final_scalar":round(mq["scalar"],4),"menthorq_scalar":mq["scalar"],"funding_scalar":1.0},
         "menthorq": {"gamma_z":mq["gamma_z"],"dealer_bias":mq["dealer_bias"],"flow_score":mq["flow_score"],"scalar":mq["scalar"],"regime":mq["regime"],"score":mq["score"],"wall_adj":0.0},

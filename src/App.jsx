@@ -583,7 +583,7 @@ export default function App(){
               </div>
             </div>
           )}
-          {/* MenthorQ */}}
+          {/* MenthorQ */}
           {mq&&(
             <div style={{background:C.card2,border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 14px"}}>
               <div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:10}}>MenthorQ Kurumsal Akış Analizi — Gamma · Dealer · Flow</div>

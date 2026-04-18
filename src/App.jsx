@@ -563,7 +563,27 @@ export default function App(){
             </div>
           </div>
 
-          {/* MenthorQ */}
+          {/* Funding Manipulation + Carry Arb */}
+          {(d.funding_manipulation||d.carry_arb)&&(
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+              <div style={{background:d.funding_manipulation?.alert?"#ff3d5a08":C.card2,border:`1px solid ${d.funding_manipulation?.alert?"#ff3d5a40":C.border}`,borderLeft:`3px solid ${d.funding_manipulation?.alert?"#ff3d5a":C.border}`,borderRadius:8,padding:"10px 14px"}}>
+                <div style={{color:d.funding_manipulation?.alert?"#ff3d5a":C.muted,fontSize:9,textTransform:"uppercase",marginBottom:5}}>{d.funding_manipulation?.alert?"⚡ MANIPULATION ALERT":"Funding Durumu"}</div>
+                <div style={{color:C.text,fontSize:10.5,lineHeight:1.6,marginBottom:5}}>{d.funding_manipulation?.description||"Veri bekleniyor..."}</div>
+                <div style={{display:"flex",gap:12,fontSize:9.5}}>
+                  <span style={{color:C.muted}}>Yıllık: <span style={{color:C.gold,fontFamily:"monospace"}}>{d.funding_manipulation?.annualized_pct?.toFixed(1)}%</span></span>
+                  <span style={{color:d.funding_manipulation?.signal==="CONTRARIAN_LONG"?C.green:d.funding_manipulation?.signal==="CONTRARIAN_SHORT"?C.red:C.muted,fontWeight:700}}>{d.funding_manipulation?.signal}</span>
+                </div>
+              </div>
+              <div style={{background:d.carry_arb?.profitable?C.greenDim:C.card2,border:`1px solid ${d.carry_arb?.profitable?"#00e59930":C.border}`,borderRadius:8,padding:"10px 14px"}}>
+                <div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:5}}>Cash & Carry Arb</div>
+                <div style={{color:d.carry_arb?.profitable?C.green:C.red,fontSize:22,fontWeight:700,fontFamily:"monospace"}}>{d.carry_arb?.total_return_pct?.toFixed(1)}%<span style={{fontSize:10,color:C.muted}}> yıllık</span></div>
+                <div style={{color:d.carry_arb?.profitable?C.green:C.muted,fontSize:10,fontWeight:700,marginBottom:4}}>{d.carry_arb?.verdict}</div>
+                <div style={{fontSize:9,color:C.muted}}>Break-even: {d.carry_arb?.break_even_funding_pct?.toFixed(1)}%</div>
+                {d.carry_arb?.profitable&&<div style={{marginTop:4,fontSize:9,color:C.green}}>Spot LONG + Perp SHORT → funding topla</div>}
+              </div>
+            </div>
+          )}
+          {/* MenthorQ */}}
           {mq&&(
             <div style={{background:C.card2,border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 14px"}}>
               <div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:10}}>MenthorQ Kurumsal Akış Analizi — Gamma · Dealer · Flow</div>

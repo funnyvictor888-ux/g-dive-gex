@@ -9,11 +9,223 @@ import json, math, time, threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.request import urlopen, Request
 from urllib.error import URLError
+from urllib.parse import urlparse, parse_qs
 
 import os
 PORT = int(os.environ.get("PORT", 7432))
 CACHE_TTL = 60  # saniye
 BTC_PERP = "BTC-PERPETUAL"
+
+# ── Ollama (LLM Filter) ────────────────────────────────────────────
+OLLAMA_URL = "http://127.0.0.1:11434"
+OLLAMA_MODEL = "llama3.2"
+
+def claude_complete(prompt, max_tokens=500):
+    """Ollama'ya istek gönderir, JSON string döndürür."""
+    try:
+        body = json.dumps({
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"num_predict": max_tokens, "temperature": 0.1}
+        }).encode()
+        req = Request(
+            f"{OLLAMA_URL}/api/generate",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urlopen(req, timeout=60) as r:
+            resp = json.loads(r.read())
+            return resp.get("response", "")
+    except Exception as e:
+        print(f"[ERR] ollama_complete: {e}")
+        return None
+
+# ── FOMC / FED ─────────────────────────────────────────────────────
+FOMC_RSS = "https://www.federalreserve.gov/feeds/press_monetary.xml"
+_fomc_cache = {"text": None, "title": "—", "date": "—", "fetched_at": 0}
+FOMC_TTL = 3600 * 6  # 6 saat
+
+def fetch_fomc_statement():
+    """Fed RSS'ten son FOMC açıklamasını çeker. 6 saatte bir yeniler."""
+    now = time.time()
+    if _fomc_cache["text"] and (now - _fomc_cache["fetched_at"]) < FOMC_TTL:
+        return _fomc_cache
+    try:
+        req = Request(FOMC_RSS, headers={"User-Agent": "gdive/1.0"})
+        with urlopen(req, timeout=12) as r:
+            raw = r.read().decode("utf-8", errors="ignore")
+
+        # XML'i basit string parse ile işle (lxml yok)
+        import re
+        items = re.findall(r"<item>(.*?)</item>", raw, re.DOTALL)
+        title, date, link = "FOMC Statement", "", ""
+        for item in items:
+            t = re.search(r"<title><!\[CDATA\[(.*?)\]\]>|<title>(.*?)</title>", item)
+            d = re.search(r"<pubDate>(.*?)</pubDate>", item)
+            l = re.search(r"<link>(.*?)</link>|<guid>(.*?)</guid>", item)
+            if t:
+                title_txt = (t.group(1) or t.group(2) or "").strip()
+                kws = ["federal open market", "fomc", "federal funds", "monetary policy"]
+                if any(k in title_txt.lower() for k in kws):
+                    title = title_txt
+                    date = (d.group(1) or "").strip() if d else ""
+                    link = (l.group(1) or l.group(2) or "").strip() if l else ""
+                    break
+
+        # Sayfadan metin çek
+        text = ""
+        if link and link.startswith("http"):
+            try:
+                req2 = Request(link, headers={"User-Agent": "gdive/1.0"})
+                with urlopen(req2, timeout=12) as r2:
+                    html = r2.read().decode("utf-8", errors="ignore")
+                # Script/style temizle, düz metin al
+                html = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.DOTALL)
+                html = re.sub(r"<[^>]+>", " ", html)
+                html = re.sub(r"\s+", " ", html).strip()
+                text = html[:3000]
+            except Exception as e:
+                print(f"[FOMC] page fetch error: {e}")
+
+        if not text:
+            # RSS description'dan al
+            desc_m = re.search(r"<description><!\[CDATA\[(.*?)\]\]>|<description>(.*?)</description>", raw, re.DOTALL)
+            text = (desc_m.group(1) or desc_m.group(2) or "")[:2000] if desc_m else "FOMC verisi alınamadı."
+
+        _fomc_cache.update({"text": text, "title": title, "date": date[:30], "fetched_at": now})
+        print(f"[FOMC] Fetched: {title[:60]}")
+        return _fomc_cache
+
+    except Exception as e:
+        print(f"[FOMC] fetch error: {e}")
+        if not _fomc_cache["text"]:
+            _fomc_cache["text"] = "FOMC verisi alınamadı. Son bilinen: Fed faiz oranını sabit tuttu."
+            _fomc_cache["title"] = "FOMC (hata)"
+            _fomc_cache["date"] = "—"
+        return _fomc_cache
+
+# ── LLM FILTER ─────────────────────────────────────────────────────
+_llm_filter_cache = {"result": None, "gamma_score": None, "regime": None, "fetched_at": 0}
+LLM_FILTER_TTL = 300  # 5 dakika
+
+def run_llm_filter(gamma_score, regime):
+    """
+    Gamma sinyalini FOMC + Deribit verileriyle LLM'e filtreden geçirir.
+    ONAYLA / VETO / NÖTR döndürür.
+    Sonucu 5 dakika cache'ler, aynı gamma/regime gelirse cache'den döner.
+    """
+    now = time.time()
+    cached = _llm_filter_cache
+    if (cached["result"] and
+        cached["gamma_score"] == round(gamma_score, 2) and
+        cached["regime"] == regime and
+        (now - cached["fetched_at"]) < LLM_FILTER_TTL):
+        return cached["result"]
+
+    # Gamma sinyali
+    threshold = 0.25
+    if gamma_score >= threshold:
+        action = "LONG"
+    elif gamma_score <= -threshold:
+        action = "SHORT"
+    else:
+        return {
+            "verdict": "NÖTR", "confidence": 1.0, "action": "BEKLE",
+            "reasoning": "Gamma skoru eşik altında, trade sinyali yok.",
+            "veto_reasons": None,
+            "fomc_title": "—", "fomc_date": "—"
+        }
+
+    # Veri topla
+    fomc = fetch_fomc_statement()
+
+    # Deribit verisi cache'den al
+    deribit_summary = "Deribit verisi bekleniyor."
+    onchain_summary = "On-chain verisi bekleniyor."
+    with cache["lock"]:
+        cd = cache.get("data")
+        if cd:
+            mq = cd.get("menthorq", {})
+            deribit_summary = (
+                f"P/C OI: {cd.get('pc_ratio', '?')} | "
+                f"Front IV: {cd.get('front_iv', '?')}% | "
+                f"IV Rank: {cd.get('iv_rank', '?')}% | "
+                f"Net GEX: {cd.get('total_net_gex', '?')}M | "
+                f"Term Shape: {cd.get('term_shape', '?')} | "
+                f"MQ Score: {mq.get('score', '?')} ({mq.get('regime', '?')})"
+            )
+            ga = cd.get("gamma_analysis", {})
+            onchain_summary = (
+                f"Flip mesafesi: {ga.get('flip_distance_pct', '?')}% | "
+                f"Flip yakın: {ga.get('flip_near', False)} | "
+                f"Neg pocket: {ga.get('in_neg_pocket', False)} | "
+                f"Max Pain: {cd.get('max_pain', '?')} | "
+                f"Expiry: {cd.get('expiry', {}).get('days_to_expiry', '?')} gün"
+            )
+
+    prompt = f"""Sen bir BTC options trading risk filtresinsin.
+Gamma sistemi {action} sinyali üretti (skor: {gamma_score:+.3f}, rejim: {regime}).
+Görevin: makro ve sentiment verilerini değerlendirip bu sinyali ONAYLA veya VETO et.
+
+FED/FOMC [{fomc.get('date', '—')}]:
+{fomc.get('text', 'Veri yok')[:1200]}
+
+DERİBİT SENTIMENT:
+{deribit_summary}
+
+GEX & ON-CHAIN:
+{onchain_summary}
+
+Karar kriterleri:
+- ONAYLA: Makro/sentiment {action} yönünü destekliyor veya nötr
+- VETO: Makro/sentiment {action} ile açıkça çelişiyor  
+- NÖTR: Karışık sinyaller, net karar yok
+
+Sadece JSON döndür:
+{{"verdict":"ONAYLA"|"VETO"|"NÖTR","confidence":<0-1>,"reasoning":<50-80 kelime Türkçe>,"veto_reasons":<sadece VETO ise string listesi, diğerleri null>}}"""
+
+    raw = claude_complete(prompt, max_tokens=400)
+    if not raw:
+        result = {
+            "verdict": "NÖTR", "confidence": 0.0, "action": action,
+            "reasoning": "LLM API'ye ulaşılamadı. ANTHROPIC_API_KEY kontrol edin.",
+            "veto_reasons": None,
+            "fomc_title": fomc.get("title", "—"),
+            "fomc_date": fomc.get("date", "—")
+        }
+    else:
+        try:
+            # JSON bloğunu metinden çıkar
+            import re as _re
+            raw_clean = raw.replace("```json", "").replace("```", "").strip()
+            # İlk { ile son } arasını al
+            match = _re.search(r'\{.*\}', raw_clean, _re.DOTALL)
+            if match:
+                raw_clean = match.group(0)
+            result = json.loads(raw_clean)
+            result["action"] = action
+            result["fomc_title"] = fomc.get("title", "—")
+            result["fomc_date"] = fomc.get("date", "—")
+        except Exception as e:
+            print(f"[LLM Filter] JSON parse error: {e} | raw: {raw[:200]}")
+            result = {
+                "verdict": "NÖTR", "confidence": 0.0, "action": action,
+                "reasoning": f"LLM yanıt parse hatası: {str(e)[:60]}",
+                "veto_reasons": None,
+                "fomc_title": fomc.get("title", "—"),
+                "fomc_date": fomc.get("date", "—")
+            }
+
+    _llm_filter_cache.update({
+        "result": result,
+        "gamma_score": round(gamma_score, 2),
+        "regime": regime,
+        "fetched_at": now
+    })
+    print(f"[LLM Filter] {action} → {result.get('verdict')} (conf: {result.get('confidence', 0):.2f})")
+    return result
 
 # ── Deribit API ────────────────────────────────────────────────────
 def deribit_get(method, params={}):
@@ -56,7 +268,6 @@ def fetch_book_summary():
 
 # ── Term structure için ATM IV ─────────────────────────────────────
 def fetch_term_structure(spot, summaries):
-    # Her expiry için ATM strike'ı bul, IV'yi al
     from collections import defaultdict
     by_expiry = defaultdict(list)
     for s in summaries:
@@ -75,19 +286,16 @@ def fetch_term_structure(spot, summaries):
     for expiry, opts in sorted(by_expiry.items()):
         if not opts:
             continue
-        # ATM'e en yakın strike
         atm = min(opts, key=lambda x: abs(x["strike"] - spot))
-        # O strike için call ve put IV ortalaması
         atm_opts = [o for o in opts if o["strike"] == atm["strike"]]
         if atm_opts:
             iv_avg = sum(o["iv"] for o in atm_opts) / len(atm_opts)
             term.append({"expiry": expiry, "iv": round(iv_avg, 2)})
 
-    return term[:8]  # ilk 8 expiry
+    return term[:8]
 
 # ── GEX Hesaplama ──────────────────────────────────────────────────
 def black_scholes_gamma(S, K, T, r, sigma):
-    """BSM Gamma"""
     if T <= 0 or sigma <= 0:
         return 0
     try:
@@ -97,7 +305,6 @@ def black_scholes_gamma(S, K, T, r, sigma):
         return 0
 
 def parse_expiry_days(expiry_str):
-    """DDMMMYY → gün sayısı (yaklaşık)"""
     months = {"JAN":1,"FEB":2,"MAR":3,"APR":4,"MAY":5,"JUN":6,
                "JUL":7,"AUG":8,"SEP":9,"OCT":10,"NOV":11,"DEC":12}
     try:
@@ -112,11 +319,6 @@ def parse_expiry_days(expiry_str):
         return 30
 
 def calc_gex(spot, summaries):
-    """
-    Net GEX per strike (USD millions)
-    GEX = Gamma × OI × Spot² × contract_size
-    Net GEX = Call GEX - Put GEX
-    """
     from collections import defaultdict
     gex_by_strike = defaultdict(float)
 
@@ -127,10 +329,10 @@ def calc_gex(spot, summaries):
             continue
         expiry = parts[1]
         strike = float(parts[2])
-        opt_type = parts[3]  # C or P
+        opt_type = parts[3]
 
-        oi = s.get("open_interest", 0) or 0  # BTC cinsinden
-        iv = (s.get("mark_iv") or 0) / 100   # decimal
+        oi = s.get("open_interest", 0) or 0
+        iv = (s.get("mark_iv") or 0) / 100
         days = parse_expiry_days(expiry)
         T = days / 365.0
 
@@ -138,25 +340,20 @@ def calc_gex(spot, summaries):
             continue
 
         gamma = black_scholes_gamma(spot, strike, T, 0.0, iv)
-        # USD cinsinden GEX = gamma × OI_contracts × spot²
-        # OI Deribit'te BTC, 1 contract = 1 BTC
-        gex_usd = gamma * oi * spot * spot  # USD
+        gex_usd = gamma * oi * spot * spot
 
         if opt_type == "C":
             gex_by_strike[strike] += gex_usd
-        else:  # Put: dealer negatif gamma
+        else:
             gex_by_strike[strike] -= gex_usd
 
-    # USD → Milyon USD, strike'a göre sırala
     result = []
     for strike, gex in sorted(gex_by_strike.items()):
         gex_m = round(gex / 1e6, 2)
-        if abs(gex_m) > 0.1:  # küçük değerleri atla
+        if abs(gex_m) > 0.1:
             result.append({"strike": strike, "net_gex": gex_m})
 
     return result
-
-# ── Ana veri paketi ────────────────────────────────────────────────
 
 # ── Gamma Regime Analyzer ─────────────────────────────────────────
 import datetime as _dt
@@ -183,7 +380,6 @@ def carry_arb_calculator(funding_annual_pct, borrow_rate_pct=5.0, fee=0.001):
 _funding_history = []
 
 def find_flip_point(gex_by_strike):
-    """GEX'in negatiften pozitife geçtiği strike = HVL/Flip"""
     nodes = sorted(gex_by_strike.items())
     flip = None
     for i in range(len(nodes)-1):
@@ -192,7 +388,6 @@ def find_flip_point(gex_by_strike):
     return flip
 
 def find_neg_pockets(gex_by_strike, spot, threshold=-0.05):
-    """En derin negatif GEX bölgeleri"""
     nodes = sorted(gex_by_strike.items())
     pockets = []
     for strike, gex in nodes:
@@ -201,7 +396,6 @@ def find_neg_pockets(gex_by_strike, spot, threshold=-0.05):
     return sorted(pockets, key=lambda x: x["gex"])[:5]
 
 def find_pos_walls(gex_by_strike, spot, threshold=0.05):
-    """En güçlü pozitif GEX duvarları"""
     nodes = sorted(gex_by_strike.items())
     walls = []
     for strike, gex in nodes:
@@ -210,7 +404,6 @@ def find_pos_walls(gex_by_strike, spot, threshold=0.05):
     return sorted(walls, key=lambda x: -x["gex"])[:5]
 
 def calc_max_pain(summaries):
-    """Max Pain: En fazla opsiyonun değersiz kalacağı fiyat"""
     from collections import defaultdict
     call_oi = defaultdict(float)
     put_oi  = defaultdict(float)
@@ -239,18 +432,15 @@ def calc_max_pain(summaries):
     return max_pain_strike
 
 def get_expiry_info():
-    """Yaklaşan expiry bilgisi"""
     today = _dt.date.today()
-    # Her ayın son Cuması
     def last_friday(year, month):
         import calendar
         last_day = calendar.monthrange(year, month)[1]
         d = _dt.date(year, month, last_day)
-        while d.weekday() != 4:  # 4 = Friday
+        while d.weekday() != 4:
             d -= _dt.timedelta(days=1)
         return d
     
-    # Bu ay ve sonraki ay
     expiries = []
     for offset in range(3):
         m = (today.month + offset - 1) % 12 + 1
@@ -273,20 +463,17 @@ def get_expiry_info():
     }
 
 def gamma_regime_analysis(spot, flip_point, gex_by_strike):
-    """Tam gamma rejimi analizi"""
     if not flip_point or not spot:
         return {"regime": "UNKNOWN", "in_positive": True, "flip_distance_pct": 0}
     
     in_positive = spot > flip_point
     flip_dist = abs(spot - flip_point) / spot * 100
-    flip_near = flip_dist < 2.0  # %2 içinde = tehlike
+    flip_near = flip_dist < 2.0
     
-    # En yakın negatif cep
     neg_nodes = [(k,v) for k,v in gex_by_strike.items() if v < 0]
     nearest_neg = min(neg_nodes, key=lambda x: abs(x[0]-spot), default=None)
     in_neg_pocket = nearest_neg and abs(nearest_neg[0]-spot)/spot < 0.015
     
-    # En yakın pozitif duvar
     pos_nodes = [(k,v) for k,v in gex_by_strike.items() if v > 0 and k > spot]
     nearest_wall = min(pos_nodes, key=lambda x: abs(x[0]-spot), default=None)
     near_pos_wall = nearest_wall and abs(nearest_wall[0]-spot)/spot < 0.03
@@ -484,7 +671,6 @@ def build_data():
     print(f"[INFO] Spot: {spot:.0f}, Options: {len(summaries)}")
     expiry_info = get_expiry_info()
     max_pain = calc_max_pain(summaries)
-    # Multi-asset data
     assets = fetch_multi_asset()
     ma_weights = compute_multi_asset_signals(assets, 1.0)
     btc_prices = assets.get("BTC",[])
@@ -494,17 +680,14 @@ def build_data():
     ma_weights = apply_execution_costs(ma_weights, _prev_weights_ma)
 
     mq = build_menthorq_state(spot, summaries)
-    mq = build_menthorq_state(spot, summaries)
     gex_nodes = calc_gex(spot, summaries)
     total_net_gex = round(sum(n["net_gex"] for n in gex_nodes), 2)
     pos_nodes = sorted([n for n in gex_nodes if n["net_gex"] > 0], key=lambda x: -x["net_gex"])[:6]
     neg_nodes = sorted([n for n in gex_nodes if n["net_gex"] < 0], key=lambda x: x["net_gex"])[:6]
 
-    # Call/Put wall → en yüksek mutlak GEX'li strikeler
     call_walls = [n["strike"] for n in pos_nodes[:4]]
     put_walls  = [n["strike"] for n in neg_nodes[:4]]
 
-    # HVL: GEX pozitiften negatife geçtiği en yakın nokta
     hvl = spot
     sorted_gex = sorted(gex_nodes, key=lambda x: x["strike"])
     for i in range(len(sorted_gex)-1):
@@ -514,7 +697,6 @@ def build_data():
     if hvl == spot and pos_nodes:
         hvl = min(pos_nodes, key=lambda x: abs(x["strike"]-spot))["strike"]
 
-    # Call resistance / Put support
     flip_point = find_flip_point(mq["gex_by_strike"]) if mq.get("gex_by_strike") else hvl
     neg_pockets = find_neg_pockets(mq.get("gex_by_strike",{}), spot)
     pos_walls_data = find_pos_walls(mq.get("gex_by_strike",{}), spot)
@@ -522,21 +704,17 @@ def build_data():
     call_resistance = call_walls[0] if call_walls else round(spot * 1.1 / 1000) * 1000
     put_support     = put_walls[0]  if put_walls  else round(spot * 0.9 / 1000) * 1000
 
-    # Term structure
     term_ivs = fetch_term_structure(spot, summaries)
     front_iv = term_ivs[0]["iv"] if term_ivs else 55.0
     back_iv  = term_ivs[-1]["iv"] if len(term_ivs) > 1 else 50.0
     term_shape = "CONTANGO" if back_iv > front_iv else "BACKWARDATION"
 
-    # IV Rank (yaklaşık — front IV / 100 * 100, gerçek için 252 günlük gerekir)
     iv_rank = min(round(front_iv / 1.2, 1), 100)
 
-    # P/C oranı (OI bazlı)
     call_oi = sum(s.get("open_interest", 0) or 0 for s in summaries if s.get("instrument_name", "").endswith("-C"))
     put_oi  = sum(s.get("open_interest", 0) or 0 for s in summaries if s.get("instrument_name", "").endswith("-P"))
     pc_ratio = round(put_oi / call_oi, 3) if call_oi > 0 else 1.0
 
-    # Regime
     gamma_regime = "LONG_GAMMA" if spot > flip_point else ("TRANSITION" if abs(spot-flip_point)/max(spot,1)<0.02 else "SHORT_GAMMA")
     if total_net_gex > 0 and front_iv < 60:
         regime = "IDEAL_LONG" if spot > hvl else "BULLISH_HIGH_VOL"
@@ -552,10 +730,15 @@ def build_data():
     long_ok  = regime in ("IDEAL_LONG", "BULLISH_HIGH_VOL") and spot > hvl
     short_ok = regime in ("BEARISH_VOLATILE", "BEARISH_LOW_VOL") and spot < hvl
 
-    # Scores
     option_score  = 5 if long_ok else (4 if total_net_gex > 0 else 2)
     vol_score     = 4 if front_iv > 50 else (3 if front_iv > 35 else 2)
     momentum_score = 4 if spot > hvl else 2
+
+    # Funding manipulation
+    _funding_history.append(mq.get("funding_rate", 0))
+    if len(_funding_history) > 96: _funding_history[:] = _funding_history[-96:]
+    funding_manip = funding_manipulation_detector(_funding_history, mq.get("funding_rate", 0))
+    carry_arb = carry_arb_calculator(funding_manip.get("annualized_pct", 0))
 
     elapsed = round(time.time() - t0, 1)
     print(f"[INFO] Done in {elapsed}s — GEX: {total_net_gex}M, IV: {front_iv}%, Regime: {regime}")
@@ -573,7 +756,7 @@ def build_data():
         "iv_rank": round(iv_rank, 2),
         "term_shape": term_shape,
         "pc_ratio": pc_ratio,
-        "hv_30d": 68.0,  # yakında HV hesabı eklenecek
+        "hv_30d": 68.0,
         "option_score": option_score,
         "vol_score": vol_score,
         "momentum_score": momentum_score,
@@ -588,49 +771,45 @@ def build_data():
         "neg_gex_nodes": neg_nodes,
         "n_contracts": len(summaries),
         "menthorq": {"gamma_z":mq["gamma_z"],"dealer_bias":mq["dealer_bias"],"flow_score":mq["flow_score"],"scalar":mq["scalar"],"regime":mq["regime"],"score":mq["score"],"wall_adj":0.0},
-        # HyperTrend funding manipulation
-        _funding_history.append(mq.get("funding_rate",0))
-        if len(_funding_history)>96: _funding_history[:]=_funding_history[-96:]
-        funding_manip=funding_manipulation_detector(_funding_history,mq.get("funding_rate",0))
-        carry_arb=carry_arb_calculator(funding_manip.get("annualized_pct",0))
-        "funding": {"score":0,"scalar":1.0,"regime":"neutral"},
-        "layer_budget": {"final_scalar":round(mq["scalar"],4),"menthorq_scalar":mq["scalar"],"funding_scalar":1.0},
-        "menthorq": {"gamma_z":mq["gamma_z"],"dealer_bias":mq["dealer_bias"],"flow_score":mq["flow_score"],"scalar":mq["scalar"],"regime":mq["regime"],"score":mq["score"],"wall_adj":0.0},
         "funding": {"score":0,"scalar":1.0,"regime":"neutral"},
         "layer_budget": {"final_scalar":round(mq["scalar"],4),"menthorq_scalar":mq["scalar"],"funding_scalar":1.0},
         "multi_asset": {"weights": ma_weights, "realized_vol": round(rvol,4), "posture": posture, "vol_target": 0.20},
-        "gamma_analysis": gamma_regime_info,"neg_pockets": neg_pockets,"pos_walls_list": pos_walls_data,"flip_point": flip_point,"max_pain": max_pain,"expiry": expiry_info,"funding_manipulation":funding_manip,"carry_arb":carry_arb,"_source": "deribit_live",
+        "gamma_analysis": gamma_regime_info,
+        "neg_pockets": neg_pockets,
+        "pos_walls_list": pos_walls_data,
+        "flip_point": flip_point,
+        "max_pain": max_pain,
+        "expiry": expiry_info,
+        "funding_manipulation": funding_manip,
+        "carry_arb": carry_arb,
+        "_source": "deribit_live",
         "_elapsed": elapsed,
     }
 
 
 # ── Server-Side Trade Management ──────────────────────────────────
-TRADES_FILE = Path("trades.json")
-
-import json as _json
-
 TRADES_FILE = "/tmp/gdive_trades.json"
 
 def load_trades_from_disk():
     try:
         if os.path.exists(TRADES_FILE):
-            return _json.load(open(TRADES_FILE))
+            return json.load(open(TRADES_FILE))
         return []
     except:
         return []
 
 def save_trades_to_disk(trades):
     try:
-        _json.dump(trades, open(TRADES_FILE, "w"))
+        json.dump(trades, open(TRADES_FILE, "w"))
     except Exception as e:
         print(f"[ERR] Trade save: {e}")
 
 def load_trades():
+    return load_trades_from_disk()
 
-    trades = load_trades_from_disk()
-    return trades
 def save_trades(trades):
     save_trades_to_disk(trades)
+
 def check_and_manage_trades(data):
     if not data or data.get("_source") != "deribit_live": return
     trades = load_trades()
@@ -654,13 +833,11 @@ def check_and_manage_trades(data):
                 pnl = round((t["stop"]-t["entry"])*t["size"], 2)
                 rr = -1.0
                 t.update({"status":"CLOSED","exitPrice":t["stop"],"exitDate":now,"pnl":pnl,"rr":rr,"notes":(t.get("notes",""))+" | STOP"})
-                print(f"[TRADE] STOP HIT LONG @ {t['stop']} PnL:{pnl}")
                 changed = True
             elif bearish:
                 pnl = round((spot-t["entry"])*t["size"], 2)
                 rr = round((spot-t["entry"])/(t["entry"]-t["stop"]),2) if t["entry"]!=t["stop"] else 0
                 t.update({"status":"CLOSED","exitPrice":spot,"exitDate":now,"pnl":pnl,"rr":rr,"notes":(t.get("notes",""))+" | Rejim SHORT"})
-                print(f"[TRADE] REGIME EXIT LONG @ {spot} PnL:{pnl}")
                 changed = True
             elif spot >= t["tp"] and not t.get("partialClosed"):
                 half = round(t["size"]/2, 4)
@@ -669,24 +846,20 @@ def check_and_manage_trades(data):
                     call_walls = data.get("call_walls",[])
                     nextTP = next((w for w in sorted(call_walls) if w > t["tp"]), t["tp"]*1.03)
                     t.update({"size":half,"partialClosed":True,"partialPnl":halfPnl,"tp":nextTP,"notes":(t.get("notes",""))+f" | %50 @ {t['tp']}"})
-                    print(f"[TRADE] TP50 LONG @ {t['tp']} PnL:{halfPnl} nextTP:{nextTP}")
                 else:
                     pnl = round((t["tp"]-t["entry"])*t["size"], 2)
                     rr = round((t["tp"]-t["entry"])/(t["entry"]-t["stop"]),2) if t["entry"]!=t["stop"] else 0
                     t.update({"status":"CLOSED","exitPrice":t["tp"],"exitDate":now,"pnl":pnl,"rr":rr,"notes":(t.get("notes",""))+" | TP"})
-                    print(f"[TRADE] TP100 LONG @ {t['tp']} PnL:{pnl}")
                 changed = True
         elif t["dir"] == "SHORT":
             if spot >= t["stop"]:
                 pnl = round((t["entry"]-t["stop"])*t["size"], 2)
                 t.update({"status":"CLOSED","exitPrice":t["stop"],"exitDate":now,"pnl":pnl,"rr":-1.0,"notes":(t.get("notes",""))+" | STOP"})
-                print(f"[TRADE] STOP HIT SHORT @ {t['stop']} PnL:{pnl}")
                 changed = True
             elif bullish:
                 pnl = round((t["entry"]-spot)*t["size"], 2)
                 rr = round((t["entry"]-spot)/(t["stop"]-t["entry"]),2) if t["entry"]!=t["stop"] else 0
                 t.update({"status":"CLOSED","exitPrice":spot,"exitDate":now,"pnl":pnl,"rr":rr,"notes":(t.get("notes",""))+" | Rejim LONG"})
-                print(f"[TRADE] REGIME EXIT SHORT @ {spot} PnL:{pnl}")
                 changed = True
             elif spot <= t["tp"] and not t.get("partialClosed"):
                 half = round(t["size"]/2, 4)
@@ -695,17 +868,14 @@ def check_and_manage_trades(data):
                     put_walls = data.get("put_walls",[])
                     nextTP = next((w for w in sorted(put_walls,reverse=True) if w < t["tp"]), t["tp"]*0.97)
                     t.update({"size":half,"partialClosed":True,"partialPnl":halfPnl,"tp":nextTP,"notes":(t.get("notes",""))+f" | %50 @ {t['tp']}"})
-                    print(f"[TRADE] TP50 SHORT @ {t['tp']} PnL:{halfPnl} nextTP:{nextTP}")
                 else:
                     pnl = round((t["entry"]-t["tp"])*t["size"], 2)
                     rr = round((t["entry"]-t["tp"])/(t["stop"]-t["entry"]),2) if t["entry"]!=t["stop"] else 0
                     t.update({"status":"CLOSED","exitPrice":t["tp"],"exitDate":now,"pnl":pnl,"rr":rr,"notes":(t.get("notes",""))+" | TP"})
-                    print(f"[TRADE] TP100 SHORT @ {t['tp']} PnL:{pnl}")
                 changed = True
         updated.append(t)
     if changed:
         save_trades(updated)
-    # Auto entry
     today = __import__("datetime").date.today().isoformat()
     has_open = any(t["status"]=="OPEN" and t.get("date","").startswith(today) for t in updated)
     if not has_open:
@@ -717,14 +887,12 @@ def check_and_manage_trades(data):
             trade={"id":int(time.time()*1000),"date":__import__("datetime").datetime.utcnow().isoformat()[:16].replace("T"," "),"dir":"LONG","entry":entry,"stop":stop,"tp":tp,"size":size,"regime":regime,"signal":"Server·Auto·LONG·scalar"+str(final_scalar),"notes":f"Auto LONG. GEX:{gex}M scalar:{final_scalar}","status":"OPEN","pnl":None,"rr":None,"exitPrice":None,"exitDate":None,"partialClosed":False}
             updated.append(trade)
             save_trades(updated)
-            print(f"[TRADE] AUTO LONG @ {entry} stop:{stop} tp:{tp} size:{size}")
         elif bearish:
             entry=spot; stop=data["call_resistance"]; tp=data["put_support"]
             size=round(risk/abs(entry-stop),4) if entry!=stop else 0.001
             trade={"id":int(time.time()*1000),"date":__import__("datetime").datetime.utcnow().isoformat()[:16].replace("T"," "),"dir":"SHORT","entry":entry,"stop":stop,"tp":tp,"size":size,"regime":regime,"signal":"Server·Auto·SHORT·scalar"+str(final_scalar),"notes":f"Auto SHORT. GEX:{gex}M scalar:{final_scalar}","status":"OPEN","pnl":None,"rr":None,"exitPrice":None,"exitDate":None,"partialClosed":False}
             updated.append(trade)
             save_trades(updated)
-            print(f"[TRADE] AUTO SHORT @ {entry} stop:{stop} tp:{tp} size:{size}")
 
 
 # ── Cache ──────────────────────────────────────────────────────────
@@ -744,7 +912,7 @@ def get_data():
 # ── HTTP Server ────────────────────────────────────────────────────
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
-        pass  # sessiz log
+        pass
 
     def send_json(self, code, obj):
         body = json.dumps(obj).encode()
@@ -755,38 +923,129 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = json.loads(self.rfile.read(content_length)) if content_length else {}
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+        if path == "/trades/sync":
+            save_trades(body if isinstance(body, list) else [])
+            self.wfile.write(json.dumps({"ok": True, "count": len(body)}).encode())
+
+        elif path == "/trades/add":
+            trades = load_trades()
+            body["id"] = int(time.time() * 1000)
+            body["status"] = "OPEN"
+            trades.append(body)
+            save_trades(trades)
+            self.wfile.write(json.dumps({"ok": True, "trade": body}).encode())
+
+        elif path == "/trades/update":
+            trade_id = body.get("id")
+            updates = {k: v for k, v in body.items() if k != "id"}
+            trades = load_trades()
+            for t in trades:
+                if t["id"] == trade_id:
+                    t.update(updates)
+                    break
+            save_trades(trades)
+            self.wfile.write(json.dumps({"ok": True}).encode())
+
+        elif path == "/trades/close":
+            trade_id = body.get("id")
+            exit_price = body.get("exitPrice")
+            trades = load_trades()
+            for t in trades:
+                if t["id"] == trade_id and t["status"] == "OPEN":
+                    from datetime import datetime
+                    pnl = (exit_price - t["entry"]) * t["size"] if t["dir"] == "LONG" else (t["entry"] - exit_price) * t["size"]
+                    t.update({
+                        "status": "CLOSED",
+                        "exitPrice": exit_price,
+                        "exitDate": datetime.utcnow().isoformat()[:16].replace("T", " "),
+                        "pnl": round(pnl, 2),
+                        "rr": round((exit_price - t["entry"]) / (t["entry"] - t["stop"]), 2) if t["dir"] == "LONG" else round((t["entry"] - exit_price) / (t["stop"] - t["entry"]), 2)
+                    })
+                    break
+            save_trades(trades)
+            self.wfile.write(json.dumps({"ok": True, "pnl": round(pnl, 2)}).encode())
+
+        else:
+            self.wfile.write(json.dumps({"error": "not found"}).encode())
+
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
     def do_GET(self):
-        if self.path == "/health":
+        # Query string ayrıştır
+        parsed = urlparse(self.path)
+        path = parsed.path
+        params = parse_qs(parsed.query)
+
+        if path == "/health":
             self.send_json(200, {"ok": True, "port": PORT})
-        elif self.path == "/data":
+
+        elif path == "/data":
             d = get_data()
             if d:
                 self.send_json(200, d)
             else:
                 self.send_json(503, {"error": "Deribit fetch failed"})
-        elif self.path == "/refresh":
+
+        elif path == "/refresh":
             with cache["lock"]:
-                cache["ts"] = 0  # cache'i sıfırla
+                cache["ts"] = 0
             d = get_data()
             if d:
                 self.send_json(200, d)
             else:
                 self.send_json(503, {"error": "refresh failed"})
-        elif self.path=="/trades":
+
+        elif path == "/trades":
             self.send_json(200, load_trades())
-        elif self.path=="/history":
+
+        elif path == "/history":
             self.send_json(200, read_state_log(200))
-        elif self.path=="/attribution":
-            rows=read_state_log(500)
-            scalars=[float(r.get("scalar",1)) for r in rows if r.get("scalar")]
-            report={"rows":len(rows),"avg_scalar":round(sum(scalars)/len(scalars),4) if scalars else None}
+
+        elif path == "/attribution":
+            rows = read_state_log(500)
+            scalars = [float(r.get("scalar",1)) for r in rows if r.get("scalar")]
+            report = {"rows":len(rows),"avg_scalar":round(sum(scalars)/len(scalars),4) if scalars else None}
             self.send_json(200, report)
+
+        elif path == "/llm-filter":
+            # /llm-filter?gamma_score=0.42&regime=LONG_GAMMA
+            try:
+                gamma_score = float(params.get("gamma_score", [0])[0])
+                regime = params.get("regime", ["NEUTRAL"])[0]
+            except:
+                self.send_json(400, {"error": "gamma_score ve regime parametreleri gerekli"})
+                return
+
+            if False:  # Ollama kullanıyor
+                self.send_json(503, {"error": "Ollama çalışmıyor, ollama serve başlat", "verdict": "NÖTR", "confidence": 0})
+                return
+
+            # LLM filter'ı arka planda çalıştır (blocking ama timeout'lu)
+            try:
+                result = run_llm_filter(gamma_score, regime)
+                self.send_json(200, result)
+            except Exception as e:
+                self.send_json(500, {"error": str(e), "verdict": "NÖTR", "confidence": 0})
+
         else:
             self.send_json(404, {"error": "not found"})
 
@@ -796,16 +1055,21 @@ if __name__ == "__main__":
     print(f"  ◆ G-DIVE Deribit Server")
     print(f"  Port : {PORT}")
     print(f"  Cache: {CACHE_TTL}s")
+    print(f"  LLM  : '✓ Ollama aktif (llama3.2)'")
     print(f"")
     print(f"  Endpoints:")
-    print(f"    GET /health  → sunucu durumu")
-    print(f"    GET /data    → canlı opsiyonlar verisi")
-    print(f"    GET /refresh → cache'i sıfırla ve yenile")
+    print(f"    GET /health          → sunucu durumu")
+    print(f"    GET /data            → canlı opsiyonlar verisi")
+    print(f"    GET /refresh         → cache'i sıfırla ve yenile")
+    print(f"    GET /llm-filter      → LLM filtre (gamma_score, regime params)")
+    print(f"    GET /trades          → trade logu")
+    print(f"    GET /history         → state geçmişi")
     print(f"")
     print(f"  İlk veri çekiliyor...")
     print(f"")
 
-    # Arka planda ilk fetch
+    # FOMC'u arka planda pre-fetch et
+    threading.Thread(target=fetch_fomc_statement, daemon=True).start()
     threading.Thread(target=get_data, daemon=True).start()
 
     server = HTTPServer(("0.0.0.0", PORT), Handler)

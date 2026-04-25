@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 const SERVER_URL = window.location.hostname === "localhost"
   ? "http://localhost:7432"
@@ -211,7 +211,6 @@ const Bar = ({pct,color,height=4}) => (
   </div>
 );
 
-// ── LAYER HEADER ──────────────────────────────────────────────────
 const LayerHead = ({num, title, subtitle, status, statusColor}) => (
   <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:14}}>
     <div style={{width:28,height:28,borderRadius:"50%",background:`${statusColor||C.muted}20`,border:`1.5px solid ${statusColor||C.muted}60`,display:"flex",alignItems:"center",justifyContent:"center",color:statusColor||C.muted,fontSize:11,fontWeight:900,flexShrink:0}}>{num}</div>
@@ -241,6 +240,170 @@ const InsightBox = ({icon,text,type}) => {
     </div>
   );
 };
+
+// ── LLM FILTER PANEL ─────────────────────────────────────────────
+function LLMFilterPanel({ gammaScore, regime, isLive }) {
+  const [state, setState] = useState({
+    verdict: null, confidence: null, action: null,
+    reasoning: null, vetoReasons: null,
+    fomcTitle: null, fomcDate: null,
+    loading: false, error: null, lastUpdate: null,
+  });
+  const debounceRef = useRef(null);
+  const lastFetchRef = useRef({ score: null, regime: null });
+
+  const runFilter = useCallback(async (forceRefresh = false) => {
+    const roundedScore = Math.round(gammaScore * 100) / 100;
+    // Aynı değerlerle tekrar fetch etme (force olmadıkça)
+    if (!forceRefresh &&
+        lastFetchRef.current.score === roundedScore &&
+        lastFetchRef.current.regime === regime) return;
+
+    setState(s => ({ ...s, loading: true, error: null }));
+    try {
+      const url = `${SERVER_URL}/llm-filter?gamma_score=${roundedScore}&regime=${regime}`;
+      const ctrl = new AbortController();
+      setTimeout(() => ctrl.abort(), 25000); // LLM 25s timeout
+      const res = await fetch(url, { signal: ctrl.signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      lastFetchRef.current = { score: roundedScore, regime };
+      setState({
+        verdict: data.verdict,
+        confidence: data.confidence,
+        action: data.action,
+        reasoning: data.reasoning,
+        vetoReasons: data.veto_reasons,
+        fomcTitle: data.fomc_title,
+        fomcDate: data.fomc_date,
+        loading: false,
+        error: null,
+        lastUpdate: new Date().toLocaleTimeString("tr-TR"),
+      });
+    } catch (err) {
+      setState(s => ({ ...s, loading: false, error: err.name === "AbortError" ? "Timeout (25s)" : err.message }));
+    }
+  }, [gammaScore, regime]);
+
+  // Gamma skoru veya rejim değişince 3sn debounce ile çalıştır
+  useEffect(() => {
+    if (!isLive) return; // Demo modda çalıştırma
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => runFilter(), 3000);
+    return () => clearTimeout(debounceRef.current);
+  }, [gammaScore, regime, isLive]);
+
+  const verdictCfg = {
+    ONAYLA: { color: C.green, bg: "#002a1a", border: "#00e59940", label: "ONAYLA", finalText: a => `${a} — AL`, desc: "LLM onayladı. Trade alınabilir." },
+    VETO:   { color: C.red,   bg: "#2a0010", border: "#ff3d5a40", label: "VETO",   finalText: () => "TRADE ALMA", desc: "LLM veto etti. Gamma sinyali geçersiz." },
+    NÖTR:   { color: C.gold,  bg: "#2a1e00", border: "#ffbe2e40", label: "NÖTR",   finalText: () => "KARAR SANA KALDI", desc: "LLM kararsız. Sinyali değerlendirin." },
+  };
+  const vc = state.verdict ? verdictCfg[state.verdict] : null;
+  const actionColor = state.action === "LONG" ? C.green : state.action === "SHORT" ? C.red : C.gold;
+
+  return (
+    <div>
+      {/* Header row */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+        <div style={{ fontSize: 10, color: C.muted }}>
+          {state.fomcDate && state.fomcDate !== "—"
+            ? `FOMC kaynak: ${state.fomcDate.slice(0, 22)}`
+            : "FOMC · Deribit · GEX verileri otomatik çekilir"}
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {state.lastUpdate && <span style={{ fontSize: 10, color: C.muted }}>son: {state.lastUpdate}</span>}
+          <button
+            onClick={() => runFilter(true)}
+            disabled={state.loading}
+            style={{ background: "transparent", border: `1px solid ${C.border}`, color: state.loading ? C.muted : C.text, padding: "3px 12px", borderRadius: 4, cursor: state.loading ? "not-allowed" : "pointer", fontFamily: "monospace", fontSize: 10 }}
+          >
+            {state.loading ? "⟳ analiz..." : "↺ Yenile"}
+          </button>
+        </div>
+      </div>
+
+      {/* Demo uyarısı */}
+      {!isLive && (
+        <div style={{ padding: "10px 14px", background: `${C.gold}10`, border: `1px solid ${C.gold}30`, borderRadius: 6, color: C.gold, fontSize: 10.5, marginBottom: 12 }}>
+          Demo modda LLM filtresi çalışmaz. Canlı sunucuya bağlanınca otomatik devreye girer.
+        </div>
+      )}
+
+      {/* Loading */}
+      {state.loading && (
+        <div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: 11 }}>
+          FOMC metni + Deribit sentiment + GEX → Claude analiz yapıyor...
+          <div style={{ height: 2, background: C.dim, borderRadius: 1, overflow: "hidden", marginTop: 10, maxWidth: 300, margin: "10px auto 0" }}>
+            <div style={{ height: "100%", width: "70%", background: C.purple, borderRadius: 1 }} />
+          </div>
+        </div>
+      )}
+
+      {/* Error */}
+      {state.error && !state.loading && (
+        <InsightBox icon="⚠" type="warn" text={`LLM Filtre hatası: ${state.error}. ANTHROPIC_API_KEY kontrol edin veya yenileyin.`} />
+      )}
+
+      {/* Sonuç */}
+      {vc && !state.loading && (
+        <>
+          {/* Gamma | LLM kararı */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+            <div style={{ textAlign: "center", padding: "16px 10px", background: C.card2, border: `1px solid ${C.border}`, borderRadius: 8 }}>
+              <div style={{ color: C.muted, fontSize: 9, textTransform: "uppercase", marginBottom: 6 }}>GAMMA SİNYALİ</div>
+              <div style={{ color: actionColor, fontSize: 30, fontWeight: 900, letterSpacing: 2, marginBottom: 4 }}>{state.action}</div>
+              <div style={{ color: C.muted, fontSize: 10 }}>{gammaScore >= 0 ? "+" : ""}{gammaScore?.toFixed(2)} · {regime}</div>
+            </div>
+            <div style={{ textAlign: "center", padding: "16px 10px", background: vc.bg, border: `2px solid ${vc.border}`, borderRadius: 8 }}>
+              <div style={{ color: C.muted, fontSize: 9, textTransform: "uppercase", marginBottom: 6 }}>LLM FİLTRE KARARI</div>
+              <div style={{ color: vc.color, fontSize: 30, fontWeight: 900, letterSpacing: 2, marginBottom: 4 }}>{vc.label}</div>
+              <div style={{ color: C.muted, fontSize: 10 }}>güven: {((state.confidence || 0) * 100).toFixed(0)}%</div>
+            </div>
+          </div>
+
+          {/* Final karar kutusu */}
+          <div style={{ textAlign: "center", padding: "14px 20px", background: vc.bg, border: `1.5px solid ${vc.border}`, borderRadius: 8, marginBottom: 12 }}>
+            <div style={{ color: C.muted, fontSize: 9, textTransform: "uppercase", marginBottom: 4 }}>SONUÇ</div>
+            <div style={{ color: vc.color, fontSize: 20, fontWeight: 900, letterSpacing: 1, marginBottom: 4 }}>{vc.finalText(state.action)}</div>
+            <div style={{ color: C.text, fontSize: 10.5 }}>{vc.desc}</div>
+          </div>
+
+          {/* Gerekçe */}
+          <div style={{ background: C.card2, border: `1px solid ${C.border}`, borderRadius: 7, padding: "12px 14px", marginBottom: state.vetoReasons ? 10 : 0 }}>
+            <div style={{ color: C.muted, fontSize: 9, textTransform: "uppercase", marginBottom: 6 }}>LLM GEREKÇESİ</div>
+            <div style={{ color: C.text, fontSize: 11, lineHeight: 1.75 }}>{state.reasoning}</div>
+          </div>
+
+          {/* Veto sebepleri */}
+          {state.vetoReasons && Array.isArray(state.vetoReasons) && (
+            <div style={{ background: `${C.red}08`, border: `1px solid ${C.red}30`, borderLeft: `3px solid ${C.red}`, borderRadius: 7, padding: "10px 14px", marginTop: 10 }}>
+              <div style={{ color: C.red, fontSize: 9, textTransform: "uppercase", marginBottom: 6 }}>VETO SEBEPLERİ</div>
+              {state.vetoReasons.map((r, i) => (
+                <div key={i} style={{ color: C.red, fontSize: 11, marginBottom: 3 }}>• {r}</div>
+              ))}
+            </div>
+          )}
+
+          {/* FOMC kaynak */}
+          {state.fomcTitle && state.fomcTitle !== "—" && (
+            <div style={{ marginTop: 10, fontSize: 9.5, color: C.muted, paddingTop: 8, borderTop: `1px solid ${C.border}` }}>
+              FOMC: {state.fomcTitle}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Empty state */}
+      {!vc && !state.loading && !state.error && isLive && (
+        <div style={{ textAlign: "center", padding: "20px 0", color: C.muted, fontSize: 11 }}>
+          Gamma sinyali değişince otomatik analiz başlar (3sn debounce).
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── TEKNIK PANEL ──────────────────────────────────────────────────
 function TeknikPanel({optData,onConf}){
@@ -321,15 +484,24 @@ export default function App(){
 
   const refresh=useCallback(async()=>{setBusy(true);const[d,bp]=await Promise.all([fetchLive(),fetchBinancePrice()]);if(d){setData(d);setLive(true);}else{setData(bp?{...DEMO,spot:bp}:DEMO);setLive(false);}setClock(new Date().toLocaleTimeString("tr-TR"));setBusy(false);},[]);
   useEffect(()=>{refresh();const id=setInterval(refresh,4*60*1000);return()=>clearInterval(id);},[refresh]);
-  useEffect(()=>{try{const t=JSON.parse(localStorage.getItem("gdive:journal:v2")||"[]");setRisk(getRiskStatus(t));}catch{};},[data]);
+  useEffect(()=>{
+    fetch(`${SERVER_URL}/trades`).then(r=>r.json()).then(t=>{setRisk(getRiskStatus(t));}).catch(()=>{});
+  },[data]);
   useEffect(()=>{fetchOHLCV("4h",500).then(c=>{if(c)setBt(runBacktest(c));});},[]);
 
-  // Position management
+  // Gamma score hesapla (MenthorQ score'dan türet)
+  const gammaScore = data.menthorq?.score || 0;
+  const gammaRegime = data.gamma_regime || "NEUTRAL";
+
   useEffect(()=>{
+    (async()=>{
     if(!data||data.spot<1000) return;
     try{
       const JKEY="gdive:journal:v2";
-      const trades=JSON.parse(localStorage.getItem(JKEY)||"[]");
+      let trades=[];
+      try{ const r=await fetch(`${SERVER_URL}/trades`); trades=await r.json(); }catch{
+        trades=JSON.parse(localStorage.getItem(JKEY)||"[]");
+      }
       const s=data.spot,reg=data.regime;
       const bull=["IDEAL_LONG","BULLISH_HIGH_VOL"].includes(reg)&&s>data.hvl&&data.total_net_gex>0;
       const ga=data.gamma_analysis||{};
@@ -344,16 +516,12 @@ export default function App(){
       const bear=["BEARISH_VOLATILE","BEARISH_LOW_VOL","HIGH_RISK"].includes(reg)&&s<data.hvl&&data.total_net_gex<0;
       const rs=getRiskStatus(trades);setRisk(rs);
       if(rs.killSwitch) return;
-      if(expiryDay){console.log("[GDIVE] Expiry günü - yeni trade açılmıyor");return;}
-      if(flipNear){console.log("[GDIVE] Flip noktasına yakın - yeni trade açılmıyor");return;}
-      
-      // THESIS INVALIDATION CHECKS
-      // 1. Gamma rejimi yönle çelişiyor mu?
-      const gammaConflict = (bullish && data.gamma_regime==="SHORT_GAMMA") || (bearish && data.gamma_regime==="LONG_GAMMA");
-      if(gammaConflict){console.log("[GDIVE] Gamma rejimi trade yönüyle çelişiyor - trade açılmıyor");return;}
-      // 2. Regime açık pozisyonla çelişiyor mu? (pozisyon yönetiminde zaten var ama yeni trade için de kontrol)
-      const regimeConflict = bullish && ["BEARISH_VOLATILE","BEARISH_LOW_VOL","HIGH_RISK"].includes(data.regime);
-      if(regimeConflict){console.log("[GDIVE] Regime bearish, bull trade açılmıyor");return;}
+      if(expiryDay){return;}
+      if(flipNear){return;}
+      const gammaConflict = (bull && data.gamma_regime==="SHORT_GAMMA") || (bear && data.gamma_regime==="LONG_GAMMA");
+      if(gammaConflict){return;}
+      const regimeConflict = bull && ["BEARISH_VOLATILE","BEARISH_LOW_VOL","HIGH_RISK"].includes(data.regime);
+      if(regimeConflict){return;}
       const confOK=!conf||(conf&&conf.score>=-10);
       const ivOK=(data.iv_rank||0)<80;
       let changed=false;
@@ -361,13 +529,11 @@ export default function App(){
         if(t.status!=="OPEN") return t;
         const now=new Date().toISOString().slice(0,16).replace("T"," ");
         if(t.dir==="LONG"){
-          // Negatif cebe girilince stop'u bir üst GEX node'a sıkıştır
           let effectiveStop=t.stop;
           if(inNegPocket&&data.neg_pockets&&data.neg_pockets.length>0){
             const nearerStop=data.neg_pockets.find(p=>p.strike>t.stop&&p.strike<s);
             if(nearerStop) effectiveStop=Math.max(t.stop,nearerStop.strike*0.995);
           }
-          // Backwardation'da da stop sık
           if(data.term_shape==="BACKWARDATION"&&!t.notes?.includes("Backwardation")){
             effectiveStop=Math.max(effectiveStop,t.entry-(t.entry-t.stop)*0.8);
           }
@@ -382,43 +548,68 @@ export default function App(){
         }
         return t;
       });
-      if(changed) localStorage.setItem(JKEY,JSON.stringify(updated));
+      if(changed){
+        localStorage.setItem(JKEY,JSON.stringify(updated));
+        fetch(`${SERVER_URL}/trades/sync`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(updated)}).catch(()=>{});
+      }
       const today=new Date().toISOString().slice(0,10);
       const hasOpen=updated.find(t=>t.date?.startsWith(today)&&t.status==="OPEN");
       if(!hasOpen&&confOK&&ivOK){
         const fs=(data.layer_budget?.final_scalar||1.0)*expiryScalar,risk2=10000*0.02*3*fs;
-        // Pozitif duvara yakınsa yeni LONG açma
-        if(nearPosWall&&!inNegPocket){console.log("[GDIVE] Pozitif duvara yakın - LONG açılmıyor");return;}
+        if(nearPosWall&&!inNegPocket){return;}
         if(bull){
+          // LLM Filtre kontrolü
+          let llmOk = false;
+          try{
+            const gs = data.menthorq?.score || 0;
+            const lr = await fetch(`${SERVER_URL}/llm-filter?gamma_score=${gs}&regime=${data.gamma_regime||'NEUTRAL'}`);
+            const ld = await lr.json();
+            llmOk = ld.verdict === "ONAYLA";
+            if(!llmOk){ console.log("[AUTO] LLM VETO/NÖTR - LONG açılmadı:", ld.verdict, ld.reasoning); }
+          }catch(e){ console.log("[AUTO] LLM filtre hatası, trade açılmadı"); llmOk=false; }
+          if(llmOk){
           const e=s;
-          // Dinamik stop: Put support veya entry'nin %5 altı - hangisi yukardaysa
           const pctStop=e*0.95;
           const sp=Math.max(data.put_support||0, pctStop);
-          // Expiry haftasında TP = Max Pain, normal = Call Resistance
           const tp2=expiryWeek&&maxPain?maxPain:data.call_resistance;
           const sz=+(risk2/Math.abs(e-sp)).toFixed(4);
-          const notes="Auto LONG GEX:"+data.total_net_gex+"M scalar:"+fs+(expiryWeek?" [Expiry Haftası TP=MaxPain "+maxPain+"]":"")+(data.term_shape==="BACKWARDATION"?" [Backwardation]":"");
+          const notes="Auto LONG GEX:"+data.total_net_gex+"M scalar:"+fs+(expiryWeek?" [Expiry Haftası TP=MaxPain "+maxPain+"]":"")+(data.term_shape==="BACKWARDATION"?" [Backwardation]":"")+" [LLM:ONAYLA]";
           const tr={id:Date.now(),date:new Date().toISOString().slice(0,16).replace("T"," "),dir:"LONG",entry:e,stop:sp,tp:tp2,size:sz,regime:reg,signal:"Auto·L·"+reg+(expiryWeek?"·Expiry":""),notes,status:"OPEN",pnl:null,rr:null,exitPrice:null,exitDate:null,partialClosed:false};
-          localStorage.setItem(JKEY,JSON.stringify([tr,...updated]));
-          alert("AUTO LONG @$"+e+" Stop:$"+sp+" TP:$"+tp2+(expiryWeek?" [Expiry TP=MaxPain]":""));
+          const newTradesL=[tr,...updated];
+          localStorage.setItem(JKEY,JSON.stringify(newTradesL));
+          fetch(`${SERVER_URL}/trades/sync`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(newTradesL)}).catch(()=>{});
+          alert("AUTO LONG @$"+e+" Stop:$"+sp+" TP:$"+tp2+(expiryWeek?" [Expiry TP=MaxPain]":"")+" [LLM ONAYLA]");
+          }
         }
         else if(bear){
+          // LLM Filtre kontrolü
+          let llmOkS = false;
+          try{
+            const gs = data.menthorq?.score || 0;
+            const lr = await fetch(`${SERVER_URL}/llm-filter?gamma_score=${gs}&regime=${data.gamma_regime||'NEUTRAL'}`);
+            const ld = await lr.json();
+            llmOkS = ld.verdict === "ONAYLA";
+            if(!llmOkS){ console.log("[AUTO] LLM VETO/NÖTR - SHORT açılmadı:", ld.verdict, ld.reasoning); }
+          }catch(e){ console.log("[AUTO] LLM filtre hatası, trade açılmadı"); llmOkS=false; }
+          if(llmOkS){
           const e=s;
-          // SHORT için en yakın negatif cep TP olabilir
           const negPocketTP=data.neg_pockets&&data.neg_pockets.length>1?data.neg_pockets[1].strike:null;
           const tp2=expiryWeek&&maxPain?maxPain:negPocketTP||data.put_support;
-          // Backwardation'da stop %20 daha geniş
           const backwardation=data.term_shape==="BACKWARDATION";
           const stopDist=Math.abs(e-data.call_resistance)*(backwardation?1.2:1.0);
           const sp=e+stopDist;
           const sz=+(risk2/Math.abs(e-sp)).toFixed(4);
-          const notes="Auto SHORT GEX:"+data.total_net_gex+"M scalar:"+fs+(backwardation?" [Backwardation +%20 stop]":"")+(inNegPocket?" [Neg Pocket Aktif]":"");
+          const notes="Auto SHORT GEX:"+data.total_net_gex+"M scalar:"+fs+(backwardation?" [Backwardation +%20 stop]":"")+(inNegPocket?" [Neg Pocket Aktif]":"")+" [LLM:ONAYLA]";
           const tr={id:Date.now(),date:new Date().toISOString().slice(0,16).replace("T"," "),dir:"SHORT",entry:e,stop:sp,tp:tp2,size:sz,regime:reg,signal:"Auto·S·"+reg+(inNegPocket?"·NegPocket":""),notes,status:"OPEN",pnl:null,rr:null,exitPrice:null,exitDate:null,partialClosed:false};
-          localStorage.setItem(JKEY,JSON.stringify([tr,...updated]));
+          const newTradesS=[tr,...updated];
+          localStorage.setItem(JKEY,JSON.stringify(newTradesS));
+          fetch(`${SERVER_URL}/trades/sync`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(newTradesS)}).catch(()=>{});
           alert("AUTO SHORT @$"+e+" Stop:$"+sp.toFixed(0)+" TP:$"+tp2+(backwardation?" [Backwardation]":""));
+          }
         }
       }
     }catch(e){console.error("pm",e);}
+    })();
   },[data,conf]);
 
   const d=data,gp=d.total_net_gex>0,gexRows=buildGEX(d);
@@ -448,12 +639,9 @@ export default function App(){
 
       <div style={{padding:"16px 20px",display:"flex",flexDirection:"column",gap:0}}>
 
-        {/* ═══════════════════════════════════════════════════════════
-            KATMAN 1 — PİYASA TEMELİ
-        ════════════════════════════════════════════════════════════ */}
+        {/* KATMAN 1 */}
         <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 18px",borderLeft:`4px solid ${aboveHVL?C.green:C.orange}`}}>
           <LayerHead num="1" title="Piyasa Temeli — Neredeyiz?" subtitle="Spot konumu, Gamma Rejimi ve HVL seviyesi tüm kararların temelidir" status={aboveHVL?"LONG BÖLGE":"SHORT BÖLGE"} statusColor={aboveHVL?C.green:C.orange}/>
-
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:10,marginBottom:14}}>
             {[
               {l:"BTC Spot",v:fmtK(d.spot),c:C.blue,sub:"Son işlem fiyatı"},
@@ -468,21 +656,15 @@ export default function App(){
               </div>
             ))}
           </div>
-
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
             <InsightBox icon="◆" type={aboveHVL?"bull":"warn"} text={aboveHVL?`Spot ${fmtK(d.spot)} > HVL ${fmtK(d.hvl)}. POZİTİF GAMMA — Dealer vol söndürür, LONG bölge.`:`Spot ${fmtK(d.spot)} < HVL ${fmtK(d.hvl)}. NEGATİF GAMMA — Dealer vol büyütür, volatilite üretir. Dikkatli.`}/>
             <InsightBox icon="◆" type={gp?"bull":"bear"} text={gp?`Net GEX +${d.total_net_gex?.toFixed(0)}M — Piyasada call ağırlıklı open interest hakim. Dealer, fiyat yükselince satar (söndürür).`:`Net GEX ${d.total_net_gex?.toFixed(0)}M — Put baskısı hakim. Dealer, fiyat düşünce alır (büyütür). Dikkatli ol.`}/>
           </div>
         </div>
 
-        {/* connector */}
-        <div style={{display:"flex",justifyContent:"center",padding:"4px 0"}}>
-          <div style={{width:1,height:20,background:`linear-gradient(${C.border},${C.border2})`}}/>
-        </div>
+        <div style={{display:"flex",justifyContent:"center",padding:"4px 0"}}><div style={{width:1,height:20,background:`linear-gradient(${C.border},${C.border2})`}}/></div>
 
-        {/* ═══════════════════════════════════════════════════════════
-            KATMAN 2 — OPSİYON ANALİZİ
-        ════════════════════════════════════════════════════════════ */}
+        {/* KATMAN 2 */}
         <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 18px",borderLeft:`4px solid ${C.blue}`}}>
           <LayerHead num="2" title="Opsiyon Piyasası — Ne Fiyatlanıyor?" subtitle="GEX haritası, IV durumu, term structure ve MenthorQ kurumsal akış analizi" status={`IV ${d.iv_rank?.toFixed(0)}%`} statusColor={d.iv_rank>70?C.red:d.iv_rank>40?C.gold:C.green}/>
 
@@ -532,7 +714,6 @@ export default function App(){
           </div>
 
           <div style={{display:"grid",gridTemplateColumns:"560px 1fr 1fr",gap:14,marginBottom:14}}>
-            {/* GEX Chart */}
             <div>
               <div style={{color:C.muted,fontSize:9,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:8}}>Net GEX Haritası — Tüm Vadeler</div>
               <GEXBar data={gexRows} spot={d.spot} hvl={d.hvl} callRes={d.call_resistance} putSup={d.put_support}/>
@@ -542,7 +723,6 @@ export default function App(){
                 <span><span style={{color:C.red}}>──</span> PS {fmtK(d.put_support)}</span>
               </div>
             </div>
-            {/* Term Structure */}
             <div>
               <div style={{color:C.muted,fontSize:9,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:8}}>
                 ATM Term Structure
@@ -551,7 +731,6 @@ export default function App(){
               <TermLine data={d.term_ivs||[]}/>
               <InsightBox icon="📈" type={d.term_shape==="CONTANGO"?"info":"warn"} text={d.term_shape==="CONTANGO"?"Contango: Uzun vadeli IV > kısa vadeli. Normal beklenti yapısı, büyük yakın hareket fiyatlanmıyor.":"Backwardation: Kısa vadeli IV yüksek. Piyasa yakın dönemde önemli hareket bekliyor."}/>
             </div>
-            {/* Key Levels */}
             <div>
               <div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:8}}>Kritik Seviyeler</div>
               {[{l:"Call Resistance",v:fmtK(d.call_resistance),c:C.green,sub:"Üst GEX duvarı"},{l:"Spot",v:fmtK(d.spot),c:C.blue,sub:"Şu anki fiyat"},{l:"HVL",v:fmtK(d.hvl),c:C.gold,sub:"Gamma flip noktası"},{l:"Put Support",v:fmtK(d.put_support),c:C.red,sub:"Alt GEX duvarı"},{l:"CR 0DTE",v:fmtK(d.call_resistance_0dte),c:"#44e8a0",sub:"Bugünlük direnç"},{l:"PS 0DTE",v:fmtK(d.put_support_0dte),c:"#ff6b50",sub:"Bugünlük destek"}].map((s,i)=>(
@@ -563,7 +742,6 @@ export default function App(){
             </div>
           </div>
 
-          {/* Funding Manipulation + Carry Arb */}
           {(d.funding_manipulation||d.carry_arb)&&(
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
               <div style={{background:d.funding_manipulation?.alert?"#ff3d5a08":C.card2,border:`1px solid ${d.funding_manipulation?.alert?"#ff3d5a40":C.border}`,borderLeft:`3px solid ${d.funding_manipulation?.alert?"#ff3d5a":C.border}`,borderRadius:8,padding:"10px 14px"}}>
@@ -583,7 +761,6 @@ export default function App(){
               </div>
             </div>
           )}
-          {/* MenthorQ */}
           {mq&&(
             <div style={{background:C.card2,border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 14px"}}>
               <div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:10}}>MenthorQ Kurumsal Akış Analizi — Gamma · Dealer · Flow</div>
@@ -613,28 +790,19 @@ export default function App(){
           )}
         </div>
 
-        <div style={{display:"flex",justifyContent:"center",padding:"4px 0"}}>
-          <div style={{width:1,height:20,background:`linear-gradient(${C.border},${C.border2})`}}/>
-        </div>
+        <div style={{display:"flex",justifyContent:"center",padding:"4px 0"}}><div style={{width:1,height:20,background:`linear-gradient(${C.border},${C.border2})`}}/></div>
 
-        {/* ═══════════════════════════════════════════════════════════
-            KATMAN 3 — TEKNİK ANALİZ
-        ════════════════════════════════════════════════════════════ */}
+        {/* KATMAN 3 */}
         <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 18px",borderLeft:`4px solid ${conf?.color||C.purple}`}}>
           <LayerHead num="3" title="Teknik Analiz — Fiyat Ne Yapıyor?" subtitle="Binance 4H ve 1H mum verisi üzerinde EMA, RSI, MACD, Bollinger Bands analizi" status={conf?conf.label:"Yükleniyor"} statusColor={conf?.color||C.muted}/>
           <TeknikPanel optData={d} onConf={setConf}/>
         </div>
 
-        <div style={{display:"flex",justifyContent:"center",padding:"4px 0"}}>
-          <div style={{width:1,height:20,background:`linear-gradient(${C.border},${C.border2})`}}/>
-        </div>
+        <div style={{display:"flex",justifyContent:"center",padding:"4px 0"}}><div style={{width:1,height:20,background:`linear-gradient(${C.border},${C.border2})`}}/></div>
 
-        {/* ═══════════════════════════════════════════════════════════
-            KATMAN 4 — SİNYAL SENTEZİ
-        ════════════════════════════════════════════════════════════ */}
+        {/* KATMAN 4 */}
         <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 18px",borderLeft:`4px solid ${C.cyan}`}}>
           <LayerHead num="4" title="Sinyal Sentezi — Ne Diyor?" subtitle="QScore opsiyon zekası ile teknik sinyal bir araya geliyor" status="OPSİYON PUANLAR" statusColor={C.cyan}/>
-
           <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:14}}>
             {[
               {score:d.option_score??0,label:"Option Score",meaning:aboveHVL&&d.option_score>=4?"Bullish + HVL ustunde":!aboveHVL&&d.option_score>=4?"OI bullish ama Spot HVL altinda - bekleme":d.option_score>=3?"Notr opsiyon akisi":"Bearish opsiyon yapisi",color:d.option_score>=4&&aboveHVL?C.green:d.option_score>=4?C.gold:d.option_score>=3?C.gold:C.red,detail:`P/C: ${d.pc_ratio?.toFixed(2)} - GEX: ${gp?"+":""}${d.total_net_gex?.toFixed(0)}M - Gamma: ${d.gamma_regime==="LONG_GAMMA"?"Pozitif":"Negatif"}`},
@@ -653,8 +821,6 @@ export default function App(){
               </div>
             ))}
           </div>
-
-          {/* Backtest */}
           {bt&&(
             <div style={{background:C.card2,border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 14px"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
@@ -672,30 +838,45 @@ export default function App(){
                   </div>
                 ))}
               </div>
-              {bt.exp<0&&<InsightBox icon="⚠" type="warn" text={`Negatif beklenti $${bt.exp}/trade — ATR stop mesafesi 2× çok geniş olabilir. RR 3:1 → 2:1'e düşürmeyi veya daha sıkı filtreler eklemeyi düşün. Kazanma oranı ${bt.wr}% ile kârlı olmak için beklenti pozitif olmalı.`}/>}
-              {bt.exp>=0&&<InsightBox icon="✦" type="bull" text={`Pozitif beklenti +$${bt.exp}/trade. ${bt.trades} trade, WR ${bt.wr}% — sistem istatistiksel olarak kârlı. Gerçek trading parametreleri backtest ayarlarından farklı olduğu için gerçek sonuçlar değişebilir.`}/>}
+              {bt.exp<0&&<InsightBox icon="⚠" type="warn" text={`Negatif beklenti $${bt.exp}/trade — ATR stop mesafesi 2× çok geniş olabilir. RR 3:1 → 2:1'e düşürmeyi veya daha sıkı filtreler eklemeyi düşün.`}/>}
+              {bt.exp>=0&&<InsightBox icon="✦" type="bull" text={`Pozitif beklenti +$${bt.exp}/trade. ${bt.trades} trade, WR ${bt.wr}% — sistem istatistiksel olarak kârlı.`}/>}
             </div>
           )}
         </div>
 
-        <div style={{display:"flex",justifyContent:"center",padding:"4px 0"}}>
-          <div style={{width:1,height:20,background:`linear-gradient(${C.border2},${d.long_ok?C.green:d.short_ok?C.red:C.muted})`}}/>
-        </div>
+        <div style={{display:"flex",justifyContent:"center",padding:"4px 0"}}><div style={{width:1,height:20,background:`linear-gradient(${C.border2},${C.purple})`}}/></div>
 
         {/* ═══════════════════════════════════════════════════════════
-            KATMAN 5 — TRADE KOMUTA MERKEZİ
+            KATMAN 5 — LLM FİLTRE (YENİ)
         ════════════════════════════════════════════════════════════ */}
+        <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 18px",borderLeft:`4px solid ${C.purple}`}}>
+          <LayerHead
+            num="5"
+            title="LLM Makro Filtre — Gamma Sinyalini Onaylıyor mu?"
+            subtitle="Fed/FOMC metni + Deribit sentiment + GEX verileri otomatik çekilir, Claude gamma sinyalini filtreler"
+            status="ONAYLA / VETO / NÖTR"
+            statusColor={C.purple}
+          />
+          <LLMFilterPanel
+            gammaScore={gammaScore}
+            regime={gammaRegime}
+            isLive={live}
+          />
+        </div>
+
+        <div style={{display:"flex",justifyContent:"center",padding:"4px 0"}}><div style={{width:1,height:20,background:`linear-gradient(${C.purple},${d.long_ok?C.green:d.short_ok?C.red:C.muted})`}}/></div>
+
+        {/* KATMAN 6 — TRADE KOMUTA MERKEZİ */}
         <div style={{background:C.card,border:`1px solid ${d.long_ok?C.green:d.short_ok?C.red:C.border}`,borderRadius:12,padding:"16px 18px",borderLeft:`4px solid ${d.long_ok?C.green:d.short_ok?C.red:C.muted}`,boxShadow:d.long_ok?`0 0 20px ${C.green}15`:d.short_ok?`0 0 20px ${C.red}15`:"none"}}>
-          <LayerHead num="5" title="Trade Komuta Merkezi — Plan Ne?" subtitle="Sistem kararı, giriş/çıkış planı, risk yönetimi ve açık pozisyon durumu" status={d.long_ok?"▲ LONG OK":d.short_ok?"▼ SHORT OK":"— BEKLE"} statusColor={d.long_ok?C.green:d.short_ok?C.red:C.muted}/>
+          <LayerHead num="6" title="Trade Komuta Merkezi — Plan Ne?" subtitle="Sistem kararı, giriş/çıkış planı, risk yönetimi ve açık pozisyon durumu" status={d.long_ok?"▲ LONG OK":d.short_ok?"▼ SHORT OK":"— BEKLE"} statusColor={d.long_ok?C.green:d.short_ok?C.red:C.muted}/>
 
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
-            {/* Sol: Karar & Plan */}
             <div>
               <Divider label="Sistem Kararı"/>
               <div style={{background:d.long_ok?C.greenDim:d.short_ok?C.redDim:C.card2,border:`1px solid ${d.long_ok?C.green:d.short_ok?C.red:C.border}40`,borderRadius:8,padding:"14px",marginBottom:12}}>
                 <div style={{color:d.long_ok?C.green:d.short_ok?C.red:C.muted,fontSize:26,fontWeight:900,marginBottom:4}}>{d.long_ok?"▲ LONG AÇILIYOR":d.short_ok?"▼ SHORT AÇILIYOR":"— HENÜZ YOK"}</div>
                 <div style={{color:C.muted,fontSize:10.5,lineHeight:1.6}}>
-                  {d.long_ok?`Regime ${d.regime?.replace("_"," ")} · Spot HVL üstünde · GEX pozitif. Tüm koşullar sağlandığında otomatik LONG açılır.`:d.short_ok?`Regime ${d.regime?.replace("_"," ")} · Spot HVL altında · GEX negatif. SHORT koşulları sağlandı.`:`Regime ${d.regime?.replace("_"," ")} · ${aboveHVL?"Teknik sinyal bekleniyor":"Spot HVL altında — LONG için bekleme"}. Konfluens +2 ve koşullar oluşunca sistem devreye girer.`}
+                  {d.long_ok?`Regime ${d.regime?.replace("_"," ")} · Spot HVL üstünde · GEX pozitif.`:d.short_ok?`Regime ${d.regime?.replace("_"," ")} · Spot HVL altında · GEX negatif. SHORT koşulları sağlandı.`:`Regime ${d.regime?.replace("_"," ")} · ${aboveHVL?"Teknik sinyal bekleniyor":"Spot HVL altında — LONG için bekleme"}.`}
                 </div>
               </div>
               <Divider label="Giriş/Çıkış Planı"/>
@@ -720,7 +901,6 @@ export default function App(){
               </div>
             </div>
 
-            {/* Sağ: Risk + Pozisyon */}
             <div>
               <Divider label="Risk Yönetimi"/>
               {risk&&(
@@ -757,7 +937,6 @@ export default function App(){
                 </div>
               </div>
 
-              {/* GEX Düğümleri */}
               <Divider label="Kritik GEX Seviyeleri"/>
               <div style={{display:"flex",flexDirection:"column",gap:3}}>
                 {[...(d.pos_gex_nodes||[]).slice(0,3).map(n=>({...n,c:C.green})),...(d.neg_gex_nodes||[]).slice(0,3).map(n=>({...n,c:C.red}))].sort((a,b)=>b.strike-a.strike).map((n,i)=>(

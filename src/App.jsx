@@ -578,7 +578,7 @@ export default function App(){
           const tr={id:Date.now(),date:new Date().toISOString().slice(0,16).replace("T"," "),dir:"LONG",entry:e,stop:sp,tp:tp2,size:sz,regime:reg,signal:"Auto·L·"+reg+(expiryWeek?"·Expiry":""),notes,status:"OPEN",pnl:null,rr:null,exitPrice:null,exitDate:null,partialClosed:false};
           const newTradesL=[tr,...updated];
           localStorage.setItem(JKEY,JSON.stringify(newTradesL));
-          fetch(`${SERVER_URL}/trades/sync`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(newTradesL)}).catch(()=>{});
+          fetch("https://gigkmjutnucssgwcnegn.supabase.co/rest/v1/trades",{method:"POST",headers:{"apikey":"sb_publishable_jiFBPVGeFXKl1myvEjTI8g_KKUenCmW","Authorization":"Bearer sb_publishable_jiFBPVGeFXKl1myvEjTI8g_KKUenCmW","Content-Type":"application/json","Prefer":"return=minimal"},body:JSON.stringify({trade_id:String(tr.id),date:tr.date,dir:tr.dir,entry:tr.entry,stop:tr.stop,tp:tr.tp,size:tr.size,status:"OPEN",regime:tr.regime,signal:tr.signal,notes:tr.notes})})).catch(()=>{});
           alert("AUTO LONG @$"+e+" Stop:$"+sp+" TP:$"+tp2+(expiryWeek?" [Expiry TP=MaxPain]":"")+" [LLM ONAYLA]");
           }
         }

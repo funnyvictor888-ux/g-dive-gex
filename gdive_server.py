@@ -1050,33 +1050,71 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(404, {"error": "not found"})
 
 # ── Main ───────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    print(f"")
-    print(f"  ◆ G-DIVE Deribit Server")
-    print(f"  Port : {PORT}")
-    print(f"  Cache: {CACHE_TTL}s")
-    print(f"  LLM  : '✓ Ollama aktif (llama3.2)'")
-    print(f"")
-    print(f"  Endpoints:")
-    print(f"    GET /health          → sunucu durumu")
-    print(f"    GET /data            → canlı opsiyonlar verisi")
-    print(f"    GET /refresh         → cache'i sıfırla ve yenile")
-    print(f"    GET /llm-filter      → LLM filtre (gamma_score, regime params)")
-    print(f"    GET /trades          → trade logu")
-    print(f"    GET /history         → state geçmişi")
-    print(f"")
-    print(f"  İlk veri çekiliyor...")
-    print(f"")
 
-    # FOMC'u arka planda pre-fetch et
-    threading.Thread(target=fetch_fomc_statement, daemon=True).start()
-    threading.Thread(target=get_data, daemon=True).start()
+# ── GitHub Actions Cron Modu ──────────────────────────────────────
+import sys as _sys
 
-    server = HTTPServer(("0.0.0.0", PORT), Handler)
-    print(f"  ✓ Sunucu hazır → http://localhost:{PORT}")
-    print(f"  Durdurmak için: Ctrl+C")
-    print(f"")
+def run_cron():
+    """GitHub Actions'tan her 5 dakikada çalışır."""
+    import json, os
+    
+    SUPABASE_URL = os.environ.get("SUPABASE_URL","")
+    SUPABASE_KEY = os.environ.get("SUPABASE_KEY","")
+    
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("[CRON] Supabase credentials eksik")
+        return
+    
+    print("[CRON] Veri çekiliyor...")
+    data = build_data()
+    if not data:
+        print("[CRON] Veri alınamadı")
+        return
+    
+    print(f"[CRON] Spot: {data.get('spot')}, Regime: {data.get('regime')}")
+    
+    # Market snapshot kaydet
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    import urllib.request, json as _json
+    snapshot = {
+        "spot": data.get("spot"),
+        "regime": data.get("regime"),
+        "gamma_regime": data.get("gamma_regime"),
+        "total_net_gex": data.get("total_net_gex"),
+        "hvl": data.get("hvl"),
+        "flip_point": data.get("flip_point"),
+        "max_pain": data.get("max_pain"),
+        "iv_rank": data.get("iv_rank"),
+        "term_shape": data.get("term_shape"),
+        "long_ok": data.get("long_ok"),
+        "short_ok": data.get("short_ok"),
+        "timestamp": __import__("datetime").datetime.utcnow().isoformat()
+    }
+    
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\n  ✓ Sunucu durduruldu.")
+        req = urllib.request.Request(
+            f"{SUPABASE_URL}/rest/v1/snapshots",
+            data=_json.dumps(snapshot).encode(),
+            headers=headers,
+            method="POST"
+        )
+        urllib.request.urlopen(req)
+        print("[CRON] Snapshot kaydedildi")
+    except Exception as e:
+        print(f"[CRON] Snapshot hatasi: {e}")
+    
+    print("[CRON] Tamamlandi")
+
+if __name__ == "__main__" and len(_sys.argv) > 1 and _sys.argv[1] == "--cron":
+    run_cron()
+elif __name__ == "__main__":
+    import http.server, socketserver
+    PORT = int(os.environ.get("PORT", 7432))
+    print(f"[INFO] Server basliyor port {PORT}")
+    with socketserver.TCPServer(("", PORT), GDiveHandler) as httpd:
+        httpd.serve_forever()

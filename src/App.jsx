@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
-const SERVER_URL = window.location.hostname === "localhost"
-  ? "http://localhost:7432"
-  : "https://web-production-909e6.up.railway.app";
+const SERVER_URL = "https://gigkmjutnucssgwcnegn.supabase.co";
+const SUPABASE_KEY = "sb_publishable_jiFBPVGeFXKl1myvEjTI8g_KKUenCmW";
 
 const C = {
   bg:"#06080e", surface:"#0a0f18", card:"#0e1520", card2:"#121c2a",
@@ -38,13 +37,15 @@ const sign = n => n >= 0 ? "+" : "";
 
 async function fetchLive() {
   try {
-    const ctrl = new AbortController(); setTimeout(()=>ctrl.abort(),4000);
-    const h = await fetch(`${SERVER_URL}/health`,{signal:ctrl.signal});
-    if(!h.ok) return null;
-    const r = await fetch(`${SERVER_URL}/data`);
+    const r = await fetch(
+      `${SERVER_URL}/rest/v1/snapshots?order=id.desc&limit=1`,
+      {headers:{"apikey":SUPABASE_KEY,"Authorization":`Bearer ${SUPABASE_KEY}`}}
+    );
     if(!r.ok) return null;
-    const j = await r.json();
-    return j.spot>10000?{...j,_source:"server"}:null;
+    const rows = await r.json();
+    if(!rows||!rows.length) return null;
+    const d = rows[0];
+    return d.spot>10000?{...d,_source:"supabase"}:null;
   } catch { return null; }
 }
 async function fetchBinancePrice() {

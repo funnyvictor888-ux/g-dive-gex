@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 
-const SERVER_URL = window.location.hostname === "localhost"
-  ? "http://localhost:7432"
-  : "https://web-production-909e6.up.railway.app";
+const SERVER_URL = "https://gigkmjutnucssgwcnegn.supabase.co";
+const SUPABASE_KEY = "sb_publishable_jiFBPVGeFXKl1myvEjTI8g_KKUenCmW";
 
 const C = {
   bg:"#06080e", surface:"#0a0f18", card:"#0e1520", card2:"#121c2a",
@@ -320,12 +319,22 @@ export default function Journal(){
   const [sortBy,setSortBy]=useState("date");
 
   const syncFromServer=useCallback(async()=>{
-    fetch(SERVER_URL+"/data").then(r=>r.ok?r.json():null).then(d=>d&&setSData(d)).catch(()=>{});
+    // Supabase snapshot
     try{
-      const r=await fetch(SERVER_URL+"/trades");
-      if(!r.ok) return;
-      const st=await r.json();
-      if(Array.isArray(st)&&st.length>0){setTrades(st);saveTrades(st);}
+      const r=await fetch(`${SERVER_URL}/rest/v1/snapshots?order=id.desc&limit=1`,{
+        headers:{"apikey":SUPABASE_KEY,"Authorization":`Bearer ${SUPABASE_KEY}`}
+      });
+      if(r.ok){const rows=await r.json();if(rows&&rows.length)setSData(rows[0]);}
+    }catch{}
+    // Supabase trades
+    try{
+      const r=await fetch(`${SERVER_URL}/rest/v1/trades?order=id.desc`,{
+        headers:{"apikey":SUPABASE_KEY,"Authorization":`Bearer ${SUPABASE_KEY}`}
+      });
+      if(r.ok){const rows=await r.json();if(Array.isArray(rows)&&rows.length){
+        const t=rows.map(r=>({id:r.trade_id||String(r.id),date:r.date,dir:r.dir,entry:r.entry,stop:r.stop,tp:r.tp,size:r.size,status:r.status||"OPEN",pnl:r.pnl,regime:r.regime,signal:r.signal,notes:r.notes,exitPrice:r.exit_price,exitDate:r.exit_date,rr:r.rr,partialClosed:r.partial_closed||false}));
+        setTrades(t);save(t);
+      }}
     }catch{}
   },[]);
 

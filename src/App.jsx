@@ -253,7 +253,7 @@ function LLMFilterPanel({ gammaScore, regime, isLive }) {
   const debounceRef = useRef(null);
   const lastFetchRef = useRef({ score: null, regime: null });
 
-  const GROQ_KEY = "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";
+  const GROQ_KEY = import.meta.env.VITE_GROQ_KEY || "";
 
   const runFilter = useCallback(async (forceRefresh = false) => {
     const roundedScore = Math.round(gammaScore * 100) / 100;
@@ -277,7 +277,7 @@ function LLMFilterPanel({ gammaScore, regime, isLive }) {
     }
 
     try {
-      const prompt = "Sen bir BTC options trading risk filtresinsin. Gamma sistemi " + action + " sinyali uretti (skor: " + roundedScore + ", rejim: " + regime + "). Sadece JSON dondur: {"verdict":"ONAYLA","confidence":0.7,"reasoning":"50 kelime Turkce gerekcesi","veto_reasons":null}";
+      const prompt = `Sen bir BTC options trading risk filtresinsin. Gamma sistemi ${action} sinyali uretti, rejim: ${regime}. Karar ver: ONAYLA, VETO veya NOTR. JSON formatinda dondur, ornk: {verdict:'ONAYLA',confidence:0.8,reasoning:'kisa aciklama',veto_reasons:null}`;
       const ctrl = new AbortController();
       setTimeout(() => ctrl.abort(), 30000);
       const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {

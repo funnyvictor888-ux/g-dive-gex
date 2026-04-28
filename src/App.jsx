@@ -253,38 +253,53 @@ function LLMFilterPanel({ gammaScore, regime, isLive }) {
   const debounceRef = useRef(null);
   const lastFetchRef = useRef({ score: null, regime: null });
 
+  const GROQ_KEY = "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";
+
   const runFilter = useCallback(async (forceRefresh = false) => {
     const roundedScore = Math.round(gammaScore * 100) / 100;
-    // Aynı değerlerle tekrar fetch etme (force olmadıkça)
     if (!forceRefresh &&
         lastFetchRef.current.score === roundedScore &&
         lastFetchRef.current.regime === regime) return;
 
     setState(s => ({ ...s, loading: true, error: null }));
-    try {
-      const url = `${SERVER_URL}/llm-filter?gamma_score=${roundedScore}&regime=${regime}`;
-      const ctrl = new AbortController();
-      setTimeout(() => ctrl.abort(), 25000); // LLM 25s timeout
-      const res = await fetch(url, { signal: ctrl.signal });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
 
+    const threshold = 0.25;
+    let action = "BEKLE";
+    if (roundedScore >= threshold) action = "LONG";
+    else if (roundedScore <= -threshold) action = "SHORT";
+
+    if (action === "BEKLE") {
+      lastFetchRef.current = { score: roundedScore, regime };
+      setState(s => ({ ...s, loading: false, verdict: "NÖTR", confidence: 1.0, action: "BEKLE",
+        reasoning: "Gamma skoru eşik altında, trade sinyali yok.", vetoReasons: null,
+        fomcTitle: "—", fomcDate: "—", lastUpdate: new Date().toLocaleTimeString("tr-TR") }));
+      return;
+    }
+
+    try {
+      const prompt = "Sen bir BTC options trading risk filtresinsin. Gamma sistemi " + action + " sinyali uretti (skor: " + roundedScore + ", rejim: " + regime + "). Sadece JSON dondur: {"verdict":"ONAYLA","confidence":0.7,"reasoning":"50 kelime Turkce gerekcesi","veto_reasons":null}";
+      const ctrl = new AbortController();
+      setTimeout(() => ctrl.abort(), 30000);
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + GROQ_KEY },
+        body: JSON.stringify({ model: "llama3-70b-8192", max_tokens: 200, messages: [{ role: "user", content: prompt }] }),
+        signal: ctrl.signal
+      });
+      if (!res.ok) throw new Error("Groq HTTP " + res.status);
+      const groqData = await res.json();
+      const raw = groqData.choices[0].message.content.replace(/```json|```/g,"").trim();
+      const match = raw.match(/\{[\s\S]*\}/);
+      const result = JSON.parse(match ? match[0] : raw);
       lastFetchRef.current = { score: roundedScore, regime };
       setState({
-        verdict: data.verdict,
-        confidence: data.confidence,
-        action: data.action,
-        reasoning: data.reasoning,
-        vetoReasons: data.veto_reasons,
-        fomcTitle: data.fomc_title,
-        fomcDate: data.fomc_date,
-        loading: false,
-        error: null,
-        lastUpdate: new Date().toLocaleTimeString("tr-TR"),
+        verdict: result.verdict, confidence: result.confidence, action: action,
+        reasoning: result.reasoning, vetoReasons: result.veto_reasons,
+        fomcTitle: "Groq llama3-70b", fomcDate: new Date().toLocaleTimeString("tr-TR"),
+        loading: false, error: null, lastUpdate: new Date().toLocaleTimeString("tr-TR"),
       });
     } catch (err) {
-      setState(s => ({ ...s, loading: false, error: err.name === "AbortError" ? "Timeout (25s)" : err.message }));
+      setState(s => ({ ...s, loading: false, error: err.name === "AbortError" ? "Timeout (30s)" : err.message }));
     }
   }, [gammaScore, regime]);
 

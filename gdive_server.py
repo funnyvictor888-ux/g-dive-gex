@@ -23,7 +23,7 @@ def claude_complete(prompt, max_tokens=500):
         return None
     try:
         body = json.dumps({
-            "model": "llama3-70b-8192",
+            "model": "llama-3.1-8b-instant",
             "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": prompt}]
         }).encode()
@@ -1242,7 +1242,7 @@ Sadece JSON döndür: {{"verdict":"ONAYLA"|"VETO"|"NÖTR","confidence":<0-1>,"re
             llm_verdict = "VETO"
             try:
                 body = _json.dumps({
-                    "model": "llama3-70b-8192",
+                    "model": "llama-3.1-8b-instant",
                     "max_tokens": 300,
                     "messages": [{"role": "user", "content": prompt}]
                 }).encode()

@@ -283,7 +283,7 @@ function LLMFilterPanel({ gammaScore, regime, isLive }) {
       const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": "Bearer " + GROQ_KEY },
-        body: JSON.stringify({ model: "llama3-70b-8192", max_tokens: 200, messages: [{ role: "user", content: prompt }] }),
+        body: JSON.stringify({ model: "llama-3.1-8b-instant", max_tokens: 200, messages: [{ role: "user", content: prompt }] }),
         signal: ctrl.signal
       });
       if (!res.ok) throw new Error("Groq HTTP " + res.status);

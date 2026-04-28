@@ -344,7 +344,7 @@ function LLMFilterPanel({ gammaScore, regime, isLive }) {
 
       {/* Error */}
       {state.error && !state.loading && (
-        <InsightBox icon="⚠" type="warn" text={`LLM Filtre hatası: ${state.error}. ANTHROPIC_API_KEY kontrol edin veya yenileyin.`} />
+        <InsightBox icon="⚠" type="warn" text={`LLM Filtre hatası: ${state.error}. Yenile butonuna bas.`} />
       )}
 
       {/* Sonuç */}

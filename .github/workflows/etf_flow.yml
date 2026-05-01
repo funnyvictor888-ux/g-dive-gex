@@ -1,0 +1,40 @@
+name: ETF Flow — Farside Daily
+
+on:
+  schedule:
+    # Her sabah 06:30 UTC (09:30 Ankara) — Farside genellikle 06:00-07:00 UTC'de güncelleniyor
+    - cron: "30 6 * * 1-5"   # Pazartesi-Cuma
+  workflow_dispatch:           # Manuel tetikleme için
+
+permissions:
+  contents: write              # Repo'ya commit için zorunlu
+
+jobs:
+  fetch-etf-flow:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Fetch Farside ETF Flow
+        run: python farside_fetcher.py
+
+      - name: Verify output
+        run: |
+          if [ -f data/etf_flow.json ]; then
+            echo "✓ data/etf_flow.json oluşturuldu"
+            cat data/etf_flow.json | python3 -m json.tool | head -30
+          else
+            echo "✗ Dosya oluşturulamadı"
+            exit 1
+          fi

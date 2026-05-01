@@ -19,9 +19,14 @@ jobs:
       - name: Install dependencies
         run: pip install requests
       
-      - name: Run G-DIVE
+      - name: Fetch Data
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: python3 gdive_server.py --cron
+      
+      - name: Run Trader
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python3 gdive_trader.py

@@ -775,7 +775,7 @@ def build_data():
         "menthorq": {"gamma_z":mq["gamma_z"],"dealer_bias":mq["dealer_bias"],"flow_score":mq["flow_score"],"scalar":mq["scalar"],"regime":mq["regime"],"score":mq["score"],"wall_adj":0.0},
         "funding": {"score":0,"scalar":1.0,"regime":"neutral"},
         "layer_budget": {"final_scalar":round(mq["scalar"],4),"menthorq_scalar":mq["scalar"],"funding_scalar":1.0},
-        "multi_asset": {"weights": ma_weights, "realized_vol": round(rvol,4), "posture": posture, "vol_target": 0.20},
+        "multi_asset": {"weights": ma_weights, "realized_vol": round(rvol,4) if rvol else 0, "posture": posture, "vol_target": 0.20},
         "gamma_analysis": gamma_regime_info,
         "neg_pockets": neg_pockets,
         "pos_walls_list": pos_walls_data,

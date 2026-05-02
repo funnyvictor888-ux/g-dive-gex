@@ -622,11 +622,6 @@ try:
     TALEB_OK = True
 except Exception:
     TALEB_OK = False
-    if len(prices)<window+1: return 0.25
-    rets=[math.log(prices[i]/prices[i-1]) for i in range(-window,0)]
-    mean=sum(rets)/len(rets)
-    variance=sum((r-mean)**2 for r in rets)/len(rets)
-    return math.sqrt(variance*252)
 
 def dynamic_vol_target(weights, realized, target_vol=0.20, posture="RISK_ON"):
     mults={"RISK_ON":1.0,"RISK_NEUTRAL":0.75,"RISK_OFF":0.5}

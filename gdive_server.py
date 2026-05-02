@@ -626,7 +626,7 @@ except Exception:
 def dynamic_vol_target(weights, realized, target_vol=0.20, posture="RISK_ON"):
     mults={"RISK_ON":1.0,"RISK_NEUTRAL":0.75,"RISK_OFF":0.5}
     mult=mults.get(posture,1.0)
-    if realized<=0: return weights
+    if not realized or realized<=0: return weights
     scale=min((target_vol/realized)*mult,1.5)
     return {k:round(v*scale,4) for k,v in weights.items()}
 

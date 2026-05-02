@@ -506,8 +506,6 @@ export default function App(){
   const [optNotes,setOptNotes]=useState([]);
   const [newNote,setNewNote]=useState("");
   const [data,setData]=useState(DEMO),[live,setLive]=useState(false),[busy,setBusy]=useState(false),[clock,setClock]=useState("");
-  const [optNotes,setOptNotes]=useState([]);
-  const [newNote,setNewNote]=useState("");
   const [conf,setConf]=useState(null),[risk,setRisk]=useState(null),[bt,setBt]=useState(null);
 
   const refresh=useCallback(async()=>{setBusy(true);const[d,bp]=await Promise.all([fetchLive(),fetchBinancePrice()]);if(d){setData(d);setLive(true);}else{setData(bp?{...DEMO,spot:bp}:DEMO);setLive(false);}setClock(new Date().toLocaleTimeString("tr-TR"));setBusy(false);},[]);

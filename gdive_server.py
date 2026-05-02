@@ -617,6 +617,11 @@ def compute_multi_asset_signals(assets, menthorq_scalar=1.0):
 
 def realized_vol(prices, window=20):
     import math
+try:
+    from taleb_integration_patch import compute_taleb_metrics
+    TALEB_OK = True
+except Exception:
+    TALEB_OK = False
     if len(prices)<window+1: return 0.25
     rets=[math.log(prices[i]/prices[i-1]) for i in range(-window,0)]
     mean=sum(rets)/len(rets)
@@ -784,7 +789,7 @@ def build_data():
         "expiry": expiry_info,
         "funding_manipulation": funding_manip,
         "carry_arb": carry_arb,
-        "_source": "deribit_live",
+        "taleb": None, "_source": "deribit_live",
         "_elapsed": elapsed,
     }
 

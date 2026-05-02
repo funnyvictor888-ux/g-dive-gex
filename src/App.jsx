@@ -268,13 +268,14 @@ function LLMFilterPanel({ gammaScore, regime, isLive }) {
     if (roundedScore >= threshold) action = "LONG";
     else if (roundedScore <= -threshold) action = "SHORT";
 
-    if (action === "BEKLE") {
+    if (action === "BEKLE" && !forceRefresh) {
       lastFetchRef.current = { score: roundedScore, regime };
       setState(s => ({ ...s, loading: false, verdict: "NÖTR", confidence: 1.0, action: "BEKLE",
         reasoning: "Gamma skoru eşik altında, trade sinyali yok.", vetoReasons: null,
         fomcTitle: "—", fomcDate: "—", lastUpdate: new Date().toLocaleTimeString("tr-TR") }));
       return;
     }
+    if (action === "BEKLE") action = "NÖTR";
 
     try {
       const prompt = `Sen bir BTC options trading risk filtresinsin. Gamma sistemi ${action} sinyali uretti, rejim: ${regime}. Karar ver: ONAYLA, VETO veya NOTR. JSON formatinda dondur, ornk: {verdict:'ONAYLA',confidence:0.8,reasoning:'kisa aciklama',veto_reasons:null}`;
@@ -289,8 +290,15 @@ function LLMFilterPanel({ gammaScore, regime, isLive }) {
       if (!res.ok) throw new Error("Groq HTTP " + res.status);
       const groqData = await res.json();
       const raw = groqData.choices[0].message.content.replace(/```json|```/g,"").trim();
-      const match = raw.match(/\{[\s\S]*\}/);
-      const result = JSON.parse(match ? match[0] : raw);
+      let result;
+      try {
+        const match = raw.match(/\{[\s\S]*\}/);
+        result = JSON.parse(match ? match[0] : raw);
+      } catch(e) {
+        // Groq düz metin döndürdüyse varsayılan kullan
+        const isPos = raw.toLowerCase().includes("onayla") || raw.toLowerCase().includes("uygun") || raw.toLowerCase().includes("destekl");
+        result = { verdict: isPos ? "ONAYLA" : "NÖTR", confidence: 0.6, reasoning: raw.slice(0,200), veto_reasons: null };
+      }
       lastFetchRef.current = { score: roundedScore, regime };
       setState({
         verdict: result.verdict, confidence: result.confidence, action: action,
@@ -495,10 +503,26 @@ function TeknikPanel({optData,onConf}){
 
 // ── MAIN ──────────────────────────────────────────────────────────
 export default function App(){
+  const [optNotes,setOptNotes]=useState([]);
+  const [newNote,setNewNote]=useState("");
   const [data,setData]=useState(DEMO),[live,setLive]=useState(false),[busy,setBusy]=useState(false),[clock,setClock]=useState("");
+  const [optNotes,setOptNotes]=useState([]);
+  const [newNote,setNewNote]=useState("");
   const [conf,setConf]=useState(null),[risk,setRisk]=useState(null),[bt,setBt]=useState(null);
 
   const refresh=useCallback(async()=>{setBusy(true);const[d,bp]=await Promise.all([fetchLive(),fetchBinancePrice()]);if(d){setData(d);setLive(true);}else{setData(bp?{...DEMO,spot:bp}:DEMO);setLive(false);}setClock(new Date().toLocaleTimeString("tr-TR"));setBusy(false);},[]);
+  const loadOptNotes=()=>{
+    fetch(`https://gigkmjutnucssgwcnegn.supabase.co/rest/v1/option_notes?order=id.desc&limit=10`,{
+      headers:{"apikey":"sb_publishable_jiFBPVGeFXKl1myvEjTI8g_KKUenCmW","Authorization":"Bearer sb_publishable_jiFBPVGeFXKl1myvEjTI8g_KKUenCmW"}
+    }).then(r=>r.ok?r.json():null).then(rows=>{if(rows&&rows.length)setOptNotes(rows);}).catch(()=>{});
+  };
+  const addOptNote=()=>{
+    if(!newNote.trim())return;
+    const n={text:newNote,date:new Date().toISOString().slice(0,16).replace("T"," "),spot:data.spot,regime:data.regime};
+    fetch(`https://gigkmjutnucssgwcnegn.supabase.co/rest/v1/option_notes`,{method:"POST",headers:{"apikey":"sb_publishable_jiFBPVGeFXKl1myvEjTI8g_KKUenCmW","Authorization":"Bearer sb_publishable_jiFBPVGeFXKl1myvEjTI8g_KKUenCmW","Content-Type":"application/json","Prefer":"return=minimal"},body:JSON.stringify(n)}).then(()=>{setOptNotes(p=>[n,...p.slice(0,9)]);setNewNote("");});
+  };
+  const optNoteSignal=(()=>{if(!optNotes.length)return 0;const t=(optNotes[0].text||"").toLowerCase();const bull=["long","bull","alim","pozitif","yukari","break"].some(k=>t.includes(k));const bear=["short","bear","satim","negatif","asagi","kirik"].some(k=>t.includes(k));return bull&&!bear?1:bear&&!bull?-1:0;})();
+
   useEffect(()=>{refresh();const id=setInterval(refresh,4*60*1000);return()=>clearInterval(id);},[refresh]);
   useEffect(()=>{
     fetch(`${SERVER_URL}/trades`).then(r=>r.json()).then(t=>{setRisk(getRiskStatus(t));}).catch(()=>{});
@@ -807,6 +831,32 @@ export default function App(){
         </div>
 
         <div style={{display:"flex",justifyContent:"center",padding:"4px 0"}}><div style={{width:1,height:20,background:`linear-gradient(${C.border},${C.border2})`}}/></div>
+
+        {/* Opsiyon Notlari */}
+        <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"14px 16px"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <span style={{color:"#9d7aff",fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"0.06em"}}>◆ Opsiyon Notu</span>
+            {optNoteSignal!==0&&<span style={{color:optNoteSignal>0?C.green:C.red,fontSize:10,fontWeight:700,background:optNoteSignal>0?C.greenDim:C.redDim,padding:"2px 10px",borderRadius:4}}>{optNoteSignal>0?"▲ Bullish +1":"▼ Bearish -1"}</span>}
+          </div>
+          <div style={{display:"flex",gap:8,marginBottom:8}}>
+            <input value={newNote} onChange={e=>setNewNote(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addOptNote()} placeholder="Bugünün thesis notu... (Enter)" style={{flex:1,background:C.card2,border:`1px solid ${C.border}`,borderRadius:5,padding:"7px 10px",color:C.text,fontFamily:"monospace",fontSize:11}}/>
+            <button onClick={addOptNote} style={{background:"#9d7aff15",border:"1px solid #9d7aff30",color:"#9d7aff",padding:"7px 14px",borderRadius:5,cursor:"pointer",fontSize:10.5,fontWeight:700}}>+ Ekle</button>
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+            {optNotes.slice(0,5).map((n,i)=>(
+              <div key={i} style={{display:"flex",gap:10,padding:"6px 10px",background:C.card2,border:`1px solid ${C.border}`,borderRadius:5}}>
+                <span style={{color:C.muted,fontSize:9,flexShrink:0,marginTop:1}}>{n.date}</span>
+                <span style={{color:C.text,fontSize:10.5,lineHeight:1.5,flex:1}}>{n.text}</span>
+                {n.spot&&<span style={{color:C.muted,fontSize:9,flexShrink:0}}>@${(n.spot||0).toLocaleString("en-US",{maximumFractionDigits:0})}</span>}
+              </div>
+            ))}
+            {optNotes.length===0&&<div style={{color:C.muted,fontSize:10,textAlign:"center",padding:8}}>Not yok — thesis yaz</div>}
+          </div>
+        </div>
+
+        <div style={{display:"flex",justifyContent:"center",padding:"4px 0"}}>
+          <div style={{width:1,height:20,background:`linear-gradient(${C.border},${C.border2})`}}/>
+        </div>
 
         {/* KATMAN 3 */}
         <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 18px",borderLeft:`4px solid ${conf?.color||C.purple}`}}>

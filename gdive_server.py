@@ -1136,6 +1136,67 @@ def run_cron():
     except Exception as e:
         print(f"[CRON] Snapshot hatasi: {e}")
     
+    # Günlük otomatik opsiyon notu (sadece sabah 06:00-07:00 UTC arası)
+    import datetime as _dt_note
+    now_h = _dt_note.datetime.utcnow().hour
+    today_str = _dt_note.datetime.utcnow().strftime("%Y-%m-%d")
+    
+    spot = data.get("spot",0)
+    regime = data.get("regime","")
+    gamma = data.get("gamma_regime","")
+    gex = data.get("total_net_gex",0)
+    hvl = data.get("hvl",0)
+    iv_rank = data.get("iv_rank",0)
+    term = data.get("term_shape","")
+    ga = data.get("gamma_analysis",{}) or {}
+    flip_dist = ga.get("flip_distance_pct",0) or 0
+    max_pain = data.get("max_pain",0) or 0
+    expiry = data.get("expiry",{}) or {}
+    
+    # Her zaman çalıştır — ama aynı günde bir kez kaydet
+    try:
+        # Bugün zaten not var mı?
+        check_req = urllib.request.Request(
+            f"{SUPABASE_URL}/rest/v1/option_notes?date=gte.{today_str}%2000:00&limit=1",
+            headers=headers, method="GET"
+        )
+        with urllib.request.urlopen(check_req) as r:
+            existing = _json.loads(r.read())
+        
+        if not existing:
+            # Otomatik not üret
+            bull = regime in ("IDEAL_LONG","BULLISH_HIGH_VOL") and spot>hvl and gex>0
+            bear = regime in ("BEARISH_VOLATILE","BEARISH_LOW_VOL") and spot<hvl and gex<0
+            flip_near = flip_dist < 2.0
+            
+            if bull and not flip_near:
+                note_text = f"AUTO: {regime.replace('_',' ')} · GEX +{gex/1000:.0f}K · Spot ${spot:.0f} HVL ${hvl:.0f} üstünde · {term} · IV Rank {iv_rank:.0f}% · Max Pain ${max_pain:.0f} · LONG bias"
+            elif bear:
+                note_text = f"AUTO: {regime.replace('_',' ')} · GEX {gex/1000:.0f}K · Spot ${spot:.0f} HVL ${hvl:.0f} altında · {term} · IV Rank {iv_rank:.0f}% · SHORT bias"
+            elif flip_near:
+                note_text = f"AUTO: Flip bölgesi · Spot ${spot:.0f} HVL ${hvl:.0f} · Mesafe {flip_dist:.1f}% · {regime.replace('_',' ')} · Yön belirsiz, bekleme"
+            else:
+                note_text = f"AUTO: {regime.replace('_',' ')} · GEX {gex/1000:.0f}K · IV Rank {iv_rank:.0f}% · {term} · Nötr"
+            
+            note_data = {
+                "text": note_text,
+                "date": _dt_note.datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+                "spot": spot,
+                "regime": regime
+            }
+            note_req = urllib.request.Request(
+                f"{SUPABASE_URL}/rest/v1/option_notes",
+                data=_json.dumps(note_data).encode(),
+                headers={**headers, "Prefer": "return=minimal"},
+                method="POST"
+            )
+            urllib.request.urlopen(note_req)
+            print(f"[CRON] Otomatik opsiyon notu kaydedildi: {note_text[:60]}...")
+        else:
+            print("[CRON] Bugün zaten opsiyon notu var")
+    except Exception as e:
+        print(f"[CRON] Opsiyon notu hatasi: {e}")
+    
     print("[CRON] Tamamlandi")
 
 

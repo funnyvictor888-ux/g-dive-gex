@@ -218,7 +218,50 @@ function buildDecisionLayers(d, t4, risk, optNotes){
     :totalScore<=-2?C.red
     :C.gold;
   
-  return{layers, totalScore, decision, decColor, blocked};
+  // Katman 6: Taleb Shadow (karar skoruna giriyor)
+  const taleb = d?.taleb;
+  if(taleb){
+    const pinScore = taleb.pin_risk?.pin_score||0;
+    const amplifier = taleb.shadow_gex?.gex_amplifier||1;
+    const bandPct = taleb.rehedge_band?.band_pct||0;
+    
+    let talebSignal = 0;
+    let talebStatus = "NÖTR";
+    let talebDetail = "";
+    
+    if(pinScore>=7.5){
+      talebSignal=-1;talebStatus="PIN RİSKİ YÜKSEK";
+      talebDetail=`Pin skoru ${pinScore.toFixed(1)}/10 — Expiry yakın, fiyat sabitlenebilir. Band ±${bandPct.toFixed(2)}%`;
+    } else if(amplifier>1.3){
+      talebSignal=-1;talebStatus="VOL ETKİSİ BÜYÜK";
+      talebDetail=`Shadow GEX BSM'den ${amplifier.toFixed(2)}× büyük — Vol etkisi var. Band ±${bandPct.toFixed(2)}%`;
+    } else if(pinScore<3&&amplifier<1.1){
+      talebSignal=1;talebStatus="SHADOW NORMAL";
+      talebDetail=`Pin ${pinScore.toFixed(1)}/10 düşük · Amplifier ${amplifier.toFixed(2)}× normal · Band ±${bandPct.toFixed(2)}%`;
+    } else {
+      talebStatus="SHADOW İZLENİYOR";
+      talebDetail=`Pin ${pinScore.toFixed(1)}/10 · Amplifier ${amplifier.toFixed(2)}× · Band ±${bandPct.toFixed(2)}%`;
+    }
+    
+    layers.push({
+      id:6, title:"Taleb Shadow",
+      signal:talebSignal,
+      status:talebStatus,
+      color:talebSignal>0?C.green:talebSignal<0?C.red:C.purple,
+      detail:talebDetail+(taleb.summary?.alert?` ⚡ ${taleb.summary.alert}`:""),
+      shadow:true
+    });
+  }
+
+  return{layers, totalScore:layers.reduce((a,l)=>a+l.signal,0), decision:
+    (layers.find(l=>l.id===5)?.signal<0&&(d?.expiry?.expiry_day||risk?.killSwitch))?"BLOKE"
+    :layers.reduce((a,l)=>a+l.signal,0)>=3?"LONG AÇILIYOR"
+    :layers.reduce((a,l)=>a+l.signal,0)>=2?"LONG HAZIR"
+    :layers.reduce((a,l)=>a+l.signal,0)<=-3?"SHORT AÇILIYOR"
+    :layers.reduce((a,l)=>a+l.signal,0)<=-2?"SHORT HAZIR"
+    :"BEKLE",
+    decColor:layers.reduce((a,l)=>a+l.signal,0)>=2?C.green:layers.reduce((a,l)=>a+l.signal,0)<=-2?C.red:C.gold,
+    blocked:d?.expiry?.expiry_day||risk?.killSwitch||false};
 }
 
 // ── GEX BAR ──────────────────────────────────────────────────────

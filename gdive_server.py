@@ -1153,7 +1153,11 @@ def run_cron():
         # Bugün zaten not var mı?
         check_req = urllib.request.Request(
             f"{SUPABASE_URL}/rest/v1/option_notes?date=gte.{today_str}%2000:00&limit=1",
-            headers=headers, method="GET"
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Content-Type": "application/json"
+            }, method="GET"
         )
         with urllib.request.urlopen(check_req) as r:
             existing = _json.loads(r.read())
@@ -1182,7 +1186,12 @@ def run_cron():
             note_req = urllib.request.Request(
                 f"{SUPABASE_URL}/rest/v1/option_notes",
                 data=_json.dumps(note_data).encode(),
-                headers={**headers, "Prefer": "return=minimal"},
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                    "Content-Type": "application/json",
+                    "Prefer": "return=minimal"
+                },
                 method="POST"
             )
             urllib.request.urlopen(note_req)

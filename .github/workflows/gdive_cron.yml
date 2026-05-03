@@ -29,4 +29,5 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GDIVE_STRATEGY: C1
         run: python3 gdive_trader.py

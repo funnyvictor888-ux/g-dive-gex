@@ -1201,6 +1201,101 @@ def run_cron():
     except Exception as e:
         print(f"[CRON] Opsiyon notu hatasi: {e}")
     
+    # ── Taleb Shadow Logger ──────────────────────────────────────
+    taleb = data.get("taleb")
+    if taleb:
+        try:
+            import datetime as _dt_taleb
+            shadow_gex = taleb.get("shadow_gex", {})
+            rehedge = taleb.get("rehedge_band", {})
+            pin = taleb.get("pin_risk", {})
+            
+            # Sinyal hesapla
+            pin_score = pin.get("pin_score", 0) or 0
+            amplifier = shadow_gex.get("gex_amplifier", 1) or 1
+            band_pct = rehedge.get("band_pct", 0) or 0
+            
+            if pin_score >= 7.5:
+                taleb_signal = -1
+            elif amplifier > 1.3:
+                taleb_signal = -1
+            elif pin_score < 3 and amplifier < 1.1:
+                taleb_signal = 1
+            else:
+                taleb_signal = 0
+            
+            log_entry = {
+                "timestamp": _dt_taleb.datetime.utcnow().isoformat(),
+                "spot": data.get("spot"),
+                "taleb_signal": taleb_signal,
+                "pin_score": round(pin_score, 3),
+                "amplifier": round(amplifier, 3),
+                "band_pct": round(band_pct, 3),
+                "vol_regime": taleb.get("vol_regime", "normal"),
+                "regime": data.get("regime", ""),
+            }
+            
+            log_req = urllib.request.Request(
+                f"{SUPABASE_URL}/rest/v1/taleb_shadow_log",
+                data=_json.dumps(log_entry).encode(),
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                    "Content-Type": "application/json",
+                    "Prefer": "return=minimal"
+                },
+                method="POST"
+            )
+            urllib.request.urlopen(log_req)
+            print(f"[TALEB] Shadow log kaydedildi: signal={taleb_signal} pin={pin_score:.1f} amp={amplifier:.2f}")
+            
+            # 1 saat onceki kayitlari guncelle (direction check)
+            one_hour_ago = (_dt_taleb.datetime.utcnow() - _dt_taleb.timedelta(hours=1)).isoformat()
+            check_url = f"{SUPABASE_URL}/rest/v1/taleb_shadow_log?timestamp=gte.{one_hour_ago[:19]}&spot_1h_later=is.null&limit=5"
+            check_req2 = urllib.request.Request(
+                check_url,
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}"
+                },
+                method="GET"
+            )
+            with urllib.request.urlopen(check_req2) as r:
+                old_logs = _json.loads(r.read())
+            
+            current_spot = data.get("spot", 0)
+            for old_log in old_logs:
+                old_spot = old_log.get("spot", 0)
+                old_signal = old_log.get("taleb_signal", 0)
+                if not old_spot: continue
+                pct_move = (current_spot - old_spot) / old_spot * 100
+                correct = (old_signal == 1 and pct_move > 0) or (old_signal == -1 and pct_move < 0)
+                update_data = {
+                    "spot_1h_later": current_spot,
+                    "pct_move": round(pct_move, 3),
+                    "direction_correct": correct if old_signal != 0 else None,
+                    "accuracy_note": f"signal={old_signal} move={pct_move:+.2f}% {'DOGRU' if correct else 'YANLIS' if old_signal != 0 else 'NOTR'}"
+                }
+                update_req = urllib.request.Request(
+                    f"{SUPABASE_URL}/rest/v1/taleb_shadow_log?id=eq.{old_log['id']}",
+                    data=_json.dumps(update_data).encode(),
+                    headers={
+                        "apikey": SUPABASE_KEY,
+                        "Authorization": f"Bearer {SUPABASE_KEY}",
+                        "Content-Type": "application/json",
+                        "Prefer": "return=minimal"
+                    },
+                    method="PATCH"
+                )
+                urllib.request.urlopen(update_req)
+            
+            if old_logs:
+                correct_count = sum(1 for l in old_logs if l.get("direction_correct") == True)
+                print(f"[TALEB] {len(old_logs)} eski kayit guncellendi, {correct_count} dogru")
+                
+        except Exception as e:
+            print(f"[TALEB] Shadow log hatasi: {e}")
+
     print("[CRON] Tamamlandi")
 
 

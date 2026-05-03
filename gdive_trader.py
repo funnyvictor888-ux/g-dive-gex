@@ -340,7 +340,15 @@ def run_trader():
     iv_crush = term_shape == "CONTANGO" and iv_rank < 25  # IV çok düşük, crush riskli değil
     iv_spike = term_shape == "BACKWARDATION" and iv_rank > 75  # IV yüksek + backwardation = sat premium değil al
     
+    # IV Crush Kill Switch (McMillan) — Backwardation + ani IV düşüşü
+    iv_crush = term_shape == "CONTANGO" and iv_rank < 25  # IV çok düşük, crush riskli değil
+    iv_spike = term_shape == "BACKWARDATION" and iv_rank > 75  # IV yüksek + backwardation = sat premium değil al
+    
     if flip_near or expiry_day or gamma_conflict:
+        return
+    
+    if iv_spike and not (long_ok and gex > 0):
+        print(f"[TRADER] IV Crush kilswitch — Backwardation IV {iv_rank:.0f}% > 75 → bekle")
         return
     
     if iv_spike and not (long_ok and gex > 0):
@@ -354,6 +362,27 @@ def run_trader():
     fs = (layer.get("final_scalar") or 1.0) * expiry_scalar
     risk = 10000 * 0.02 * 3 * fs
     
+    # ── tastylive: 45 DTE Entry Filtresi ─────────────────────────
+    days_to_exp = expiry.get("days_to_expiry", 30)
+    if days_to_exp < 7:
+        print(f"[TRADER] tastylive 45DTE: Expiry {days_to_exp}g — çok yakın, bekle")
+        return
+    if days_to_exp > 60:
+        print(f"[TRADER] tastylive 45DTE: Expiry {days_to_exp}g — çok uzak, 45DTE bekle")
+        # Engelleme değil, uyarı — range trade hariç
+    
+    # ── tastylive: P50 Filtresi (Delta bazlı olasılık) ─────────────
+    # Put Support mesafesinden basit olasılık hesabı
+    def calc_p50(spot, stop, target):
+        """Basit risk/reward bazlı P50 tahmini."""
+        if not spot or not stop or not target: return 0.5
+        risk = abs(spot - stop)
+        reward = abs(target - spot)
+        if risk <= 0: return 0.5
+        rr = reward / risk
+        # tastylive: RR > 1:1 ise P50 > 50% kabul
+        return min(0.75, 0.4 + rr * 0.15)
+
     # ── tastylive: 45 DTE Entry Filtresi ─────────────────────────
     days_to_exp = expiry.get("days_to_expiry", 30)
     if days_to_exp < 7:
@@ -416,6 +445,15 @@ def run_trader():
         
         # tastylive 1/3 Move hedefi ekle — birinci çıkış
         one_third_tp = e + (tp2 - e) / 3
+        
+        # tastylive P50 filtresi
+        p50 = calc_p50(e, sp, tp2)
+        if p50 < 0.45:
+            print(f"[TRADER] P50 filtre: {p50:.0%} < 45% — LONG açılmıyor")
+            return
+        
+        # tastylive 1/3 Move hedefi ekle — birinci çıkış
+        one_third_tp = e + (tp2 - e) / 3
         tr = {
             "trade_id": str(int(datetime.utcnow().timestamp()*1000)),
             "date": datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
@@ -432,6 +470,14 @@ def run_trader():
         sp = min(call_res or e*1.07, e * 1.05)
         tp2 = max_pain if expiry_week and max_pain else (put_sup or e * 0.93)
         sz = round(risk / abs(e - sp), 4)
+        
+        # tastylive P50 filtresi
+        p50 = calc_p50(e, sp, tp2)
+        if p50 < 0.45:
+            print(f"[TRADER] P50 filtre: {p50:.0%} < 45% — SHORT açılmıyor")
+            return
+        
+        one_third_tp = e - (e - tp2) / 3
         
         # tastylive P50 filtresi
         p50 = calc_p50(e, sp, tp2)

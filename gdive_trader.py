@@ -55,6 +55,86 @@ def get_btc_price():
     except:
         return None
 
+
+# ── Range Trade Modülü ───────────────────────────────────────────
+def detect_range_mode(snapshots):
+    """
+    Son 12 snapshot (1 saat) incelenir.
+    Fiyat belirli bir band içinde kalıyorsa range modu.
+    """
+    if len(snapshots) < 6:
+        return False, 0, 0
+    
+    spots = [s.get("spot", 0) for s in snapshots if s.get("spot")]
+    if len(spots) < 6:
+        return False, 0, 0
+    
+    high = max(spots)
+    low = min(spots)
+    range_pct = (high - low) / low * 100
+    
+    # %3'ten dar range = range modu
+    is_range = range_pct < 3.0
+    return is_range, high, low
+
+def check_range_entry(spot, call_res, put_sup, max_pain, iv_rank, gex, snapshots):
+    """
+    Range trade giriş koşulları:
+    - GEX pozitif (dealer söndürüyor)
+    - IV Rank < 45% (düşük volatilite beklentisi)
+    - Spot, duvarlardan birine yakın
+    """
+    if not call_res or not put_sup:
+        return None, None, None, None
+    
+    if gex <= 0:
+        return None, None, None, None
+    
+    if iv_rank > 45:
+        return None, None, None, None
+    
+    is_range, range_high, range_low = detect_range_mode(snapshots)
+    if not is_range:
+        return None, None, None, None
+    
+    range_width = call_res - put_sup
+    
+    # Alt duvara yakın mı? (Put Support ±%2)
+    dist_to_put = (spot - put_sup) / spot * 100
+    if dist_to_put < 2.0:
+        # RANGE LONG
+        entry = spot
+        stop = put_sup * 0.985  # Put Support %1.5 altı
+        tp = max_pain if max_pain and abs(max_pain - spot) > abs(put_sup - spot) else put_sup + range_width * 0.5
+        return "RANGE_LONG", entry, stop, tp
+    
+    # Üst duvara yakın mı? (Call Resistance ±%2)
+    dist_to_call = (call_res - spot) / spot * 100
+    if dist_to_call < 2.0:
+        # RANGE SHORT
+        entry = spot
+        stop = call_res * 1.015  # Call Resistance %1.5 üstü
+        tp = max_pain if max_pain and abs(max_pain - spot) > abs(call_res - spot) else call_res - range_width * 0.5
+        return "RANGE_SHORT", entry, stop, tp
+    
+    return None, None, None, None
+
+def get_recent_snapshots(supabase_url, supabase_key, limit=12):
+    """Son 12 snapshot'ı çek (yaklaşık 1 saat)."""
+    try:
+        req = urllib.request.Request(
+            f"{supabase_url}/rest/v1/snapshots?order=id.desc&limit={limit}",
+            headers={
+                "apikey": supabase_key,
+                "Authorization": f"Bearer {supabase_key}"
+            }
+        )
+        with urllib.request.urlopen(req) as r:
+            return json.loads(r.read())
+    except:
+        return []
+
+
 def run_trader():
     print(f"[TRADER] {datetime.utcnow().isoformat()} başlıyor...")
     
@@ -211,12 +291,42 @@ def run_trader():
         print("[TRADER] Bugün açık trade var — yeni açılmıyor")
         return
     
+    # Recent snapshots for range detection
+    recent_snaps = get_recent_snapshots(SUPABASE_URL, SUPABASE_KEY, 12)
+    
     if flip_near or expiry_day or gamma_conflict:
         return
     
     fs = (layer.get("final_scalar") or 1.0) * expiry_scalar
     risk = 10000 * 0.02 * 3 * fs
     
+    # ── Range Trade Kontrolü ──────────────────────────────────────
+    range_signal, range_entry, range_stop, range_tp = check_range_entry(
+        price, call_res, put_sup, max_pain, iv_rank, gex, recent_snaps
+    )
+    
+    if range_signal and not flip_near and not expiry_day:
+        dir_ = "LONG" if range_signal == "RANGE_LONG" else "SHORT"
+        sz = round(risk / abs(range_entry - range_stop), 4) if range_stop and abs(range_entry - range_stop) > 0 else 0.001
+        tr = {
+            "trade_id": str(int(datetime.utcnow().timestamp()*1000)),
+            "date": datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+            "dir": dir_,
+            "entry": range_entry,
+            "stop": round(range_stop, 0),
+            "tp": round(range_tp, 0),
+            "size": sz,
+            "status": "OPEN",
+            "regime": regime + "_RANGE",
+            "signal": f"Range·{range_signal}",
+            "notes": f"RANGE {dir_} · GEX +{gex:.0f}M · IV {iv_rank:.0f}% · CR ${call_res:.0f} PS ${put_sup:.0f}",
+            "partial_closed": False
+        }
+        supa_post("trades", tr)
+        print(f"[TRADER] ✅ RANGE {dir_} açıldı @${range_entry:.0f} Stop:${range_stop:.0f} TP:${range_tp:.0f}")
+        return
+    
+    # ── Trend Trade (Normal Mod) ───────────────────────────────────
     if long_ok and gex > 0 and spot > hvl and iv_rank < 80:
         e = price
         sp = max(put_sup or e*0.93, e * 0.95)

@@ -197,6 +197,21 @@ def run_trader():
             unreal = (price - entry) * size
             print(f"[TRADER] LONG #{trade_id} Entry:{entry} Stop:{stop} TP:{tp} Unrealized:+${unreal:.0f}")
             
+            # 21 DTE Kuralı (Overby)
+            days_left = expiry.get("days_to_expiry", 30)
+            if days_left <= 21 and not t.get("partial_closed"):
+                pnl = (price - entry) * size
+                if pnl > 0:
+                    supa_patch(f"trades?trade_id=eq.{trade_id}", {
+                        "status": "CLOSED", "exit_price": price,
+                        "exit_date": datetime.utcnow().isoformat(),
+                        "pnl": round(pnl, 2),
+                        "notes": (t.get("notes","") + f" |21DTE d={days_left}")
+                    })
+                    print(f"[TRADER] 21DTE EXIT LONG @${price:.0f} PnL:${pnl:.0f}")
+                    continue
+            
+            
             # 21 DTE Kuralı (Overby/McMillan) — expiry yakınsa kapat
             days_left = expiry.get("days_to_expiry", 30)
             if days_left <= 21 and not t.get("partial_closed"):
@@ -231,6 +246,16 @@ def run_trader():
                     "notes": (t.get("notes","") + f" |1/3TP@{price:.0f}")
                 })
                 print(f"[TRADER] 1/3 MOVE EXIT LONG @${price:.0f} — %50 kapat, yeni TP:${next_wall:.0f}")
+            
+            # 1/3 Move Exit (tastylive)
+            elif price >= (entry + (tp - entry) / 3) and not t.get("partial_closed") and (tp > entry):
+                new_size = size / 2
+                next_wall = call_res * 1.03 if call_res else tp * 1.03
+                supa_patch(f"trades?trade_id=eq.{trade_id}", {
+                    "size": new_size, "partial_closed": True, "tp": next_wall,
+                    "notes": (t.get("notes","") + f" |1/3TP@{price:.0f}")
+                })
+                print(f"[TRADER] 1/3 EXIT LONG @${price:.0f} %50 kapat, TP→${next_wall:.0f}")
             
             # TP hit — tam TP
             elif price >= tp and not t.get("partial_closed"):

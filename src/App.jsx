@@ -591,7 +591,7 @@ export default function App(){
               <div style={{marginTop:10,padding:"8px 10px",background:C.card2,border:`1px solid ${C.border}`,borderRadius:6}}>
                 <div style={{color:C.muted,fontSize:9,marginBottom:5}}>Backtest — 4H 500 Bar</div>
                 <div style={{display:"flex",gap:14,flexWrap:"wrap",fontSize:9.5}}>
-                  {[{l:"WR",v:`${bt.wr}%`,c:bt.wr>=50?C.green:C.orange},{l:"PF",v:`${bt.pf}×`,c:bt.pf>=1.5?C.green:bt.pf>=1?C.gold:C.red},{l:"MaxDD",v:`${bt.maxDD}%`,c:bt.maxDD<10?C.green:C.red},{l:"Beklenti",v:`${bt.exp>=0?"+":""}${bt.exp}`,c:bt.exp>=0?C.green:C.red},{l:"Sharpe",v:bt.sharpe||0,c:bt.sharpe>=1?C.green:bt.sharpe>=0?C.gold:C.red},{l:"Calmar",v:bt.calmar||0,c:bt.calmar>=1?C.green:bt.calmar>=0.5?C.gold:C.red}].map((s,i)=>(
+                  {[{l:"WR",v:`${bt.wr}%`,c:bt.wr>=50?C.green:C.orange},{l:"PF",v:`${bt.pf}×`,c:bt.pf>=1.5?C.green:bt.pf>=1?C.gold:C.red},{l:"MaxDD",v:`${bt.maxDD}%`,c:bt.maxDD<10?C.green:C.red},{l:"Beklenti",v:`${bt.exp>=0?"+":""}${bt.exp}`,c:bt.exp>=0?C.green:C.red},{l:"Sharpe",v:bt.sharpe||0,c:(bt.sharpe||0)>=1?C.green:(bt.sharpe||0)>=0?C.gold:C.red},{l:"Calmar",v:bt.calmar||0,c:(bt.calmar||0)>=1?C.green:(bt.calmar||0)>=0.5?C.gold:C.red},{l:"Sharpe",v:bt.sharpe||0,c:bt.sharpe>=1?C.green:bt.sharpe>=0?C.gold:C.red},{l:"Calmar",v:bt.calmar||0,c:bt.calmar>=1?C.green:bt.calmar>=0.5?C.gold:C.red}].map((s,i)=>(
                     <span key={i}>{s.l}: <span style={{color:s.c,fontWeight:700}}>{s.v}</span></span>
                   ))}
                 </div>

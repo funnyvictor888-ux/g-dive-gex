@@ -111,7 +111,14 @@ function runBacktest(candles){
   const aw=wins.length?wins.reduce((a,t)=>a+t.pnl,0)/wins.length:0;
   const al=losses.length?Math.abs(losses.reduce((a,t)=>a+t.pnl,0)/losses.length):1;
   const pf=al>0?Math.abs(wins.reduce((a,t)=>a+t.pnl,0))/Math.abs(losses.reduce((a,t)=>a+t.pnl,0)||1):0;
-  return{trades:trades.length,wins:wins.length,wr:+wr.toFixed(1),totalPnl:+totalPnl.toFixed(0),finalEq:+eq.toFixed(0),maxDD:+(mdd*100).toFixed(1),pf:+pf.toFixed(2),aw:+aw.toFixed(0),al:+al.toFixed(0),exp:+((wr/100*aw-(1-wr/100)*al)).toFixed(0)};
+  // Sharpe Ratio hesapla (McMillan/Overby)
+  const pnls = trades.map(t=>t.pnl);
+  const avgPnl = pnls.reduce((a,b)=>a+b,0)/pnls.length;
+  const stdPnl = Math.sqrt(pnls.reduce((a,b)=>a+(b-avgPnl)**2,0)/pnls.length);
+  const sharpe = stdPnl>0 ? +(avgPnl/stdPnl*Math.sqrt(252/7)).toFixed(2) : 0; // haftalık normalize
+  // Calmar Ratio = Yıllık getiri / Max DD
+  const calmar = mdd>0 ? +((totalPnl/10000*100)/(mdd*100)).toFixed(2) : 0;
+  return{trades:trades.length,wins:wins.length,wr:+wr.toFixed(1),totalPnl:+totalPnl.toFixed(0),finalEq:+eq.toFixed(0),maxDD:+(mdd*100).toFixed(1),pf:+pf.toFixed(2),aw:+aw.toFixed(0),al:+al.toFixed(0),exp:+((wr/100*aw-(1-wr/100)*al)).toFixed(0),sharpe,calmar};
 }
 
 function getRiskStatus(trades){
@@ -157,7 +164,7 @@ function buildDecisionLayers(d, t4, risk, optNotes){
     signal: optScore,
     status: optScore>0?"BULLISH OI":optScore<0?"BEARISH":ivRank>=75?"IV YÜKSEK":"NÖTR",
     color: optScore>0?C.green:optScore<0?C.red:C.gold,
-    detail: `GEX ${gexOk?"+":""}${(gex/1000).toFixed(0)}K · IV ${d?.front_iv?.toFixed(1)||"?"}% · Rank ${ivRank?.toFixed(0)}% · ${d?.term_shape||"?"}`
+    detail: `GEX ${gexOk?"+":""}${(gex/1000).toFixed(0)}K · IV ${d?.front_iv?.toFixed(1)||"?"}% · Rank ${ivRank?.toFixed(0)}% · ${d?.term_shape||"?"}${ivRank>75&&d?.term_shape==="BACKWARDATION"?" ⚡IV CRUSH RİSKİ":ivRank<25?" ✓ Vol ucuz":""}`
       +(maxPain?` · Max Pain ${fK(maxPain)}`:"")+
       (expiry.days_to_expiry!==undefined?` · Expiry ${expiry.days_to_expiry}g`:""),
   });
@@ -584,7 +591,7 @@ export default function App(){
               <div style={{marginTop:10,padding:"8px 10px",background:C.card2,border:`1px solid ${C.border}`,borderRadius:6}}>
                 <div style={{color:C.muted,fontSize:9,marginBottom:5}}>Backtest — 4H 500 Bar</div>
                 <div style={{display:"flex",gap:14,flexWrap:"wrap",fontSize:9.5}}>
-                  {[{l:"WR",v:`${bt.wr}%`,c:bt.wr>=50?C.green:C.orange},{l:"PF",v:`${bt.pf}×`,c:bt.pf>=1.5?C.green:bt.pf>=1?C.gold:C.red},{l:"MaxDD",v:`${bt.maxDD}%`,c:bt.maxDD<10?C.green:C.red},{l:"Beklenti",v:`${bt.exp>=0?"+":""}${bt.exp}`,c:bt.exp>=0?C.green:C.red}].map((s,i)=>(
+                  {[{l:"WR",v:`${bt.wr}%`,c:bt.wr>=50?C.green:C.orange},{l:"PF",v:`${bt.pf}×`,c:bt.pf>=1.5?C.green:bt.pf>=1?C.gold:C.red},{l:"MaxDD",v:`${bt.maxDD}%`,c:bt.maxDD<10?C.green:C.red},{l:"Beklenti",v:`${bt.exp>=0?"+":""}${bt.exp}`,c:bt.exp>=0?C.green:C.red},{l:"Sharpe",v:bt.sharpe||0,c:bt.sharpe>=1?C.green:bt.sharpe>=0?C.gold:C.red},{l:"Calmar",v:bt.calmar||0,c:bt.calmar>=1?C.green:bt.calmar>=0.5?C.gold:C.red}].map((s,i)=>(
                     <span key={i}>{s.l}: <span style={{color:s.c,fontWeight:700}}>{s.v}</span></span>
                   ))}
                 </div>

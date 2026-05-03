@@ -197,6 +197,20 @@ def run_trader():
             unreal = (price - entry) * size
             print(f"[TRADER] LONG #{trade_id} Entry:{entry} Stop:{stop} TP:{tp} Unrealized:+${unreal:.0f}")
             
+            # 21 DTE Kuralı (Overby/McMillan) — expiry yakınsa kapat
+            days_left = expiry.get("days_to_expiry", 30)
+            if days_left <= 21 and not t.get("partial_closed"):
+                pnl = (price - entry) * size
+                if pnl > 0:  # Karda ise kapat
+                    supa_patch(f"trades?trade_id=eq.{trade_id}", {
+                        "status": "CLOSED", "exit_price": price,
+                        "exit_date": datetime.utcnow().isoformat(),
+                        "pnl": round(pnl, 2),
+                        "notes": (t.get("notes","") + f" |21DTE_EXIT days={days_left}")
+                    })
+                    print(f"[TRADER] 21 DTE KURALI — LONG @${price:.0f} kapatıldı PnL:${pnl:.0f}")
+                    continue
+            
             # Stop hit
             if price <= stop:
                 pnl = (stop - entry) * size
@@ -243,6 +257,20 @@ def run_trader():
         elif direction == "SHORT":
             unreal = (entry - price) * size
             print(f"[TRADER] SHORT #{trade_id} Entry:{entry} Unrealized:+${unreal:.0f}")
+            
+            # 21 DTE Kuralı
+            days_left = expiry.get("days_to_expiry", 30)
+            if days_left <= 21 and not t.get("partial_closed"):
+                pnl = (entry - price) * size
+                if pnl > 0:
+                    supa_patch(f"trades?trade_id=eq.{trade_id}", {
+                        "status": "CLOSED", "exit_price": price,
+                        "exit_date": datetime.utcnow().isoformat(),
+                        "pnl": round(pnl, 2),
+                        "notes": (t.get("notes","") + f" |21DTE_EXIT days={days_left}")
+                    })
+                    print(f"[TRADER] 21 DTE KURALI — SHORT @${price:.0f} kapatıldı PnL:${pnl:.0f}")
+                    continue
             
             if price >= stop:
                 pnl = (entry - stop) * size
@@ -294,7 +322,15 @@ def run_trader():
     # Recent snapshots for range detection
     recent_snaps = get_recent_snapshots(SUPABASE_URL, SUPABASE_KEY, 12)
     
+    # IV Crush Kill Switch (McMillan) — Backwardation + ani IV düşüşü
+    iv_crush = term_shape == "CONTANGO" and iv_rank < 25  # IV çok düşük, crush riskli değil
+    iv_spike = term_shape == "BACKWARDATION" and iv_rank > 75  # IV yüksek + backwardation = sat premium değil al
+    
     if flip_near or expiry_day or gamma_conflict:
+        return
+    
+    if iv_spike and not (long_ok and gex > 0):
+        print(f"[TRADER] IV Crush kilswitch — Backwardation IV {iv_rank:.0f}% > 75 → bekle")
         return
     
     fs = (layer.get("final_scalar") or 1.0) * expiry_scalar

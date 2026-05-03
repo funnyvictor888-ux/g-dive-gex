@@ -208,7 +208,7 @@ function buildDecisionLayers(d, t4, risk, optNotes){
     detail: killSwitch?"Günlük limit veya DD aşıldı — sistem durduruldu"
       :expDay?"Expiry günü — yeni trade açılmıyor"
       :flipNear?`Flip noktasına ${flipDist?.toFixed(1)}% yakın — bekleme`
-      :`Kill switch: ${risk?.dPnl>=0?"+":""}${risk?.dPnl||0}$ · DD ${risk?.mdd||0}%`,
+      :`Kill switch: ${risk?.dPnl>=0?"+":""}${risk?.dPnl||0}$ · DD ${risk?.mdd||0}% · tastylive: 45DTE=${expiry.days_to_expiry||"?"}g · P50 aktif`,
   });
   
   // Toplam skor ve karar

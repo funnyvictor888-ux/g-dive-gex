@@ -182,7 +182,17 @@ def run_trader():
 
     # 4H teknik analiz
     candles = get_binance_ohlcv("4h", 250)
-    if len(candles) >= 210:
+    if len(candles) < 50:
+        print("[TRADER] Binance erisilemedi, snapshot teknik kullaniliyor")
+        # Snapshot'tan temel sinyalleri al
+        bull_tech = regime in ("IDEAL_LONG","BULLISH_HIGH_VOL") and spot > hvl and gex > 0
+        bear_tech = regime in ("BEARISH_VOLATILE","BEARISH_LOW_VOL") and spot < hvl and gex < 0
+        rsi_v = 60 if bull_tech else 40
+        atr_v = spot * 0.015  # yaklasik %1.5 ATR
+        n = 0
+        e9 = [spot]; e21 = [hvl]; e50 = [spot]; e200 = [spot*0.95 if bull_tech else spot*1.05]
+        print(f"[TRADER] Snapshot sinyal: bull={bull_tech} bear={bear_tech}")
+    if len(candles) >= 50:
         closes = [c["c"] for c in candles]
         e9 = ema(closes, 9)
         e21 = ema(closes, 21)

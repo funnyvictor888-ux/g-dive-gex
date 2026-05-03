@@ -387,48 +387,9 @@ def run_trader():
     fs = (layer.get("final_scalar") or 1.0) * expiry_scalar
     risk = 10000 * 0.02 * 3 * fs
     
+    
     # ── tastylive: 45 DTE Entry Filtresi ─────────────────────────
     days_to_exp = expiry.get("days_to_expiry", 30)
-    if days_to_exp < 7:
-        print(f"[TRADER] tastylive 45DTE: Expiry {days_to_exp}g — çok yakın, bekle")
-        return
-    if days_to_exp > 60:
-        print(f"[TRADER] tastylive 45DTE: Expiry {days_to_exp}g — çok uzak, 45DTE bekle")
-        # Engelleme değil, uyarı — range trade hariç
-    
-    # ── tastylive: P50 Filtresi (Delta bazlı olasılık) ─────────────
-    # Put Support mesafesinden basit olasılık hesabı
-    def calc_p50(spot, stop, target):
-        """Basit risk/reward bazlı P50 tahmini."""
-        if not spot or not stop or not target: return 0.5
-        risk = abs(spot - stop)
-        reward = abs(target - spot)
-        if risk <= 0: return 0.5
-        rr = reward / risk
-        # tastylive: RR > 1:1 ise P50 > 50% kabul
-        return min(0.75, 0.4 + rr * 0.15)
-
-    # ── tastylive: 45 DTE Entry Filtresi ─────────────────────────
-    days_to_exp = expiry.get("days_to_expiry", 30)
-    if days_to_exp < 7:
-        print(f"[TRADER] tastylive 45DTE: Expiry {days_to_exp}g — çok yakın, bekle")
-        return
-    if days_to_exp > 60:
-        print(f"[TRADER] tastylive 45DTE: Expiry {days_to_exp}g — çok uzak, 45DTE bekle")
-        # Engelleme değil, uyarı — range trade hariç
-    
-    # ── tastylive: P50 Filtresi (Delta bazlı olasılık) ─────────────
-    # Put Support mesafesinden basit olasılık hesabı
-    def calc_p50(spot, stop, target):
-        """Basit risk/reward bazlı P50 tahmini."""
-        if not spot or not stop or not target: return 0.5
-        risk = abs(spot - stop)
-        reward = abs(target - spot)
-        if risk <= 0: return 0.5
-        rr = reward / risk
-        # tastylive: RR > 1:1 ise P50 > 50% kabul
-        return min(0.75, 0.4 + rr * 0.15)
-
     # ── Range Trade Kontrolü ──────────────────────────────────────
     range_signal, range_entry, range_stop, range_tp = check_range_entry(
         price, call_res, put_sup, max_pain, iv_rank, gex, recent_snaps
@@ -462,20 +423,8 @@ def run_trader():
         tp2 = max_pain if expiry_week and max_pain else (call_res or e * 1.07)
         sz = round(risk / abs(e - sp), 4)
         
-        # tastylive P50 filtresi
-        p50 = calc_p50(e, sp, tp2)
-        if p50 < 0.45:
-            print(f"[TRADER] P50 filtre: {p50:.0%} < 45% — LONG açılmıyor")
-            return
-        
-        # tastylive 1/3 Move hedefi ekle — birinci çıkış
+        # tastylive 1/3 Move hedefi
         one_third_tp = e + (tp2 - e) / 3
-        
-        # tastylive P50 filtresi
-        p50 = calc_p50(e, sp, tp2)
-        if p50 < 0.45:
-            print(f"[TRADER] P50 filtre: {p50:.0%} < 45% — LONG açılmıyor")
-            return
         
         # tastylive 1/3 Move hedefi ekle — birinci çıkış
         one_third_tp = e + (tp2 - e) / 3
@@ -484,7 +433,7 @@ def run_trader():
             "date": datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
             "dir": "LONG", "entry": e, "stop": round(sp,0), "tp": round(tp2,0),
             "size": sz, "status": "OPEN", "regime": regime, "signal": f"Auto·L·{regime}",
-            "notes": f"Auto LONG GEX:{gex:.0f}M scalar:{fs:.2f} P50:{p50:.0%} 1/3TP:${one_third_tp:.0f}{' Backwardation' if term_shape=='BACKWARDATION' else ''}",
+            "notes": f"Auto LONG GEX:{gex:.0f}M scalar:{fs:.2f} 1/3TP:${one_third_tp:.0f}{' Backwardation' if term_shape=='BACKWARDATION' else ''}",
             "partial_closed": False
         }
         supa_post("trades", tr)
@@ -496,19 +445,7 @@ def run_trader():
         tp2 = max_pain if expiry_week and max_pain else (put_sup or e * 0.93)
         sz = round(risk / abs(e - sp), 4)
         
-        # tastylive P50 filtresi
-        p50 = calc_p50(e, sp, tp2)
-        if p50 < 0.45:
-            print(f"[TRADER] P50 filtre: {p50:.0%} < 45% — SHORT açılmıyor")
-            return
-        
         one_third_tp = e - (e - tp2) / 3
-        
-        # tastylive P50 filtresi
-        p50 = calc_p50(e, sp, tp2)
-        if p50 < 0.45:
-            print(f"[TRADER] P50 filtre: {p50:.0%} < 45% — SHORT açılmıyor")
-            return
         
         one_third_tp = e - (e - tp2) / 3
         backwardation = term_shape == "BACKWARDATION"
@@ -519,7 +456,7 @@ def run_trader():
             "date": datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
             "dir": "SHORT", "entry": e, "stop": round(sp,0), "tp": round(tp2,0),
             "size": sz, "status": "OPEN", "regime": regime, "signal": f"Auto·S·{regime}",
-            "notes": f"Auto SHORT GEX:{gex:.0f}M scalar:{fs:.2f} P50:{p50:.0%} 1/3TP:${one_third_tp:.0f}{' Backwardation+20%stop' if backwardation else ''}",
+            "notes": f"Auto SHORT GEX:{gex:.0f}M scalar:{fs:.2f} 1/3TP:${one_third_tp:.0f}{' Backwardation+20%stop' if backwardation else ''}",
             "partial_closed": False
         }
         supa_post("trades", tr)

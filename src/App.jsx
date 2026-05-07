@@ -398,6 +398,15 @@ export default function App(){
     }).catch(()=>{});
   },[data]);
 
+
+  const sendHalt = (type) => {
+    const text = type === "HALT" ? "MANUAL_HALT" : "MANUAL_RESUME";
+    fetch("https://gigkmjutnucssgwcnegn.supabase.co/rest/v1/option_notes", {
+      method:"POST",
+      headers:{"apikey":"sb_publishable_jiFBPVGeFXKl1myvEjTI8g_KKUenCmW","Authorization":"Bearer sb_publishable_jiFBPVGeFXKl1myvEjTI8g_KKUenCmW","Content-Type":"application/json","Prefer":"return=minimal"},
+      body:JSON.stringify({text,date:new Date().toISOString().slice(0,16).replace("T"," "),spot:data?.spot||0,regime:"SYSTEM"})
+    }).then(()=>alert(type==="HALT"?"🚨 SİSTEM DURDURULDU!":"✅ Sistem devam ediyor"));
+  };
   const addNote=()=>{
     if(!newNote.trim()||!data)return;
     const n={text:newNote,date:new Date().toISOString().slice(0,16).replace("T"," "),spot:data.spot,regime:data.regime};
@@ -442,6 +451,8 @@ export default function App(){
           <span style={{fontSize:26,fontWeight:900,color:C.text}}>{fK(price||d.spot)}</span>
           <span style={{color:live?C.green:C.gold,fontSize:10}}>{busy?"⟳":live?`● ${clock}`:"◆ CACHED"}</span>
           <button onClick={refresh} disabled={busy} style={{background:C.card,border:`1px solid ${C.border}`,color:C.muted,padding:"3px 12px",borderRadius:4,cursor:"pointer",fontSize:10}}>↺</button>
+          <button onClick={()=>sendHalt("HALT")} style={{background:`${C.red}20`,border:`1px solid ${C.red}`,color:C.red,padding:"3px 12px",borderRadius:4,cursor:"pointer",fontSize:10,fontWeight:700}}>🚨 HALT</button>
+          <button onClick={()=>sendHalt("RESUME")} style={{background:`${C.green}20`,border:`1px solid ${C.green}`,color:C.green,padding:"3px 12px",borderRadius:4,cursor:"pointer",fontSize:10,fontWeight:700}}>▶ RESUME</button>
         </div>
       </div>
 

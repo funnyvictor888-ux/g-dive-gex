@@ -7,6 +7,60 @@ SHORT + EqCurve + 21DTE + 1/3Exit + IVCrush
 import json, urllib.request, os, math
 from datetime import datetime
 
+
+INVARIANTS = {
+    "max_drawdown_pct": 0.20,
+    "max_position_usd": 50000,
+    "max_daily_loss_usd": 2000,
+    "max_open_trades": 2,
+    "max_daily_trades": 6,
+}
+
+def check_invariants(open_trades, closed_trades, price):
+    violations = []
+    if len(open_trades) >= INVARIANTS["max_open_trades"]:
+        violations.append(f"MAX_OPEN: {len(open_trades)}")
+    for t in open_trades:
+        if abs(t.get("size",0))*price > INVARIANTS["max_position_usd"]:
+            violations.append(f"MAX_POS: ${abs(t.get('size',0))*price:.0f}")
+    from datetime import datetime as _dt
+    today = _dt.utcnow().strftime("%Y-%m-%d")
+    dpnl = sum(t.get("pnl",0) or 0 for t in closed_trades if (t.get("exit_date") or "").startswith(today))
+    if dpnl < -INVARIANTS["max_daily_loss_usd"]:
+        violations.append(f"DAILY_LOSS: ${dpnl:.0f}")
+    dn = len([t for t in closed_trades+open_trades if (t.get("date") or "").startswith(today)])
+    if dn >= INVARIANTS["max_daily_trades"]:
+        violations.append(f"DAILY_TRADES: {dn}")
+    CAPITAL=10000;eq=CAPITAL;pk=CAPITAL
+    for t in sorted(closed_trades, key=lambda x: x.get("exit_date") or ""):
+        eq+=(t.get("pnl") or 0)
+        if eq>pk: pk=eq
+    dd=(pk-eq)/pk if pk>0 else 0
+    if dd>=INVARIANTS["max_drawdown_pct"]: violations.append(f"MAX_DD: {dd*100:.1f}%")
+    return len(violations)==0, violations
+
+def check_halt_status():
+    import urllib.request, json as _j
+    try:
+        req=urllib.request.Request(f"{SUPABASE_URL}/rest/v1/option_notes?text=ilike.*MANUAL_HALT*&order=id.desc&limit=1",headers={"apikey":SUPABASE_KEY,"Authorization":f"Bearer {SUPABASE_KEY}"})
+        with urllib.request.urlopen(req) as r: rows=_j.loads(r.read())
+        if not rows: return False
+        req2=urllib.request.Request(f"{SUPABASE_URL}/rest/v1/option_notes?text=ilike.*MANUAL_RESUME*&order=id.desc&limit=1",headers={"apikey":SUPABASE_KEY,"Authorization":f"Bearer {SUPABASE_KEY}"})
+        with urllib.request.urlopen(req2) as r2: resume=_j.loads(r2.read())
+        if resume and resume[0].get("id",0)>rows[0].get("id",0): return False
+        return True
+    except: return False
+
+def log_halt(reason, violations):
+    import urllib.request, json as _j
+    from datetime import datetime as _dt
+    try:
+        row={"text":f"INVARIANT_HALT:{reason}|{'|'.join(violations)}","date":_dt.utcnow().strftime("%Y-%m-%d %H:%M"),"spot":0,"regime":"HALT"}
+        req=urllib.request.Request(f"{SUPABASE_URL}/rest/v1/option_notes",data=_j.dumps(row).encode(),headers={"apikey":SUPABASE_KEY,"Authorization":f"Bearer {SUPABASE_KEY}","Content-Type":"application/json","Prefer":"return=minimal"},method="POST")
+        urllib.request.urlopen(req)
+    except: pass
+
+
 SUPABASE_URL = os.environ.get("SUPABASE_URL","")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY","")
 
@@ -226,6 +280,12 @@ def run_trader():
     open_trades = supa_get("trades?status=eq.OPEN")
     closed_trades = supa_get("trades?status=eq.CLOSED&order=id.desc&limit=50")
     print(f"[TRADER] Açık: {len(open_trades)} | Kapalı son50: {len(closed_trades)}")
+    if check_halt_status():
+        print("[TRADER] MANUAL HALT aktif"); return
+    ok, violations = check_invariants(open_trades, closed_trades, price)
+    if not ok:
+        print(f"[TRADER] INVARIANT: {violations}"); log_halt("AUTO", violations); return
+    print("[TRADER] Invariants OK")
 
     # Filtreler
     flip_near = flip_info.get("flip_near", False) or abs(price-hvl)/price*100 < 0.5

@@ -675,7 +675,7 @@ def calc_vanna_charm_gex(summaries, spot, r=0.05):
 
         except: continue
 
-    dsigma_dS = -0.002  # BTC tipik: spot duser IV yukselir
+    dsigma_dS = -0.0001  # BTC tipik: spot $1K duser IV ~%0.01 artar
     shadow_adjustment = vanna_gex * dsigma_dS * spot
 
     return {

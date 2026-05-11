@@ -689,7 +689,9 @@ def fetch_funding_rate():
     """Deribit perp funding rate cek"""
     import urllib.request, json as _j
     try:
-        url = "https://www.deribit.com/api/v2/public/get_funding_rate_value?instrument_name=BTC-PERPETUAL&start_timestamp=0&end_timestamp=99999999999999"
+        import time as _t
+        now = int(_t.time()*1000)
+        url = f"https://www.deribit.com/api/v2/public/get_funding_rate_value?instrument_name=BTC-PERPETUAL&start_timestamp={now-3600000}&end_timestamp={now}"
         req = urllib.request.Request(url, headers={"User-Agent":"gdive/1.0"})
         with urllib.request.urlopen(req, timeout=8) as r:
             data = _j.loads(r.read())
@@ -701,16 +703,22 @@ def fetch_funding_rate():
         return {"rate_8h": 0.0, "annual_pct": 0.0, "bias": "NEUTRAL"}
 
 def fetch_binance_closes(days=32):
-    """Binance'dan son 32 günlük günlük kapanış fiyatlarını çek"""
-    import urllib.request, json as _j
+    """Deribit BTC index fiyatindan son 32 gunluk kapanislari hesapla"""
+    import urllib.request, json as _j, time as _t
     try:
-        url = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=33"
-        req = urllib.request.Request(url)
+        # Deribit BTC index OHLCV - 1 gunluk
+        now = int(_t.time()*1000)
+        start = now - days*24*3600*1000
+        url = f"https://www.deribit.com/api/v2/public/get_tradingview_chart_data?instrument_name=BTC-PERPETUAL&resolution=1D&start_timestamp={start}&end_timestamp={now}"
+        req = urllib.request.Request(url, headers={"User-Agent":"gdive/1.0"})
         with urllib.request.urlopen(req, timeout=10) as r:
             data = _j.loads(r.read())
-        return [float(k[4]) for k in data]  # kapanış fiyatları
+        closes = data.get("result",{}).get("close",[])
+        if closes:
+            return [float(x) for x in closes]
+        return []
     except Exception as e:
-        print(f"[RV] Binance hatasi: {e}")
+        print(f"[RV] Deribit OHLCV hatasi: {e}")
         return []
 
 def calc_realized_vol(closes, window=30):

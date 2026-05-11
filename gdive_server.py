@@ -617,6 +617,117 @@ def compute_multi_asset_signals(assets, menthorq_scalar=1.0):
 
 def realized_vol(prices, window=20):
     import math
+
+def compute_vanna(S, K, T, r, sigma):
+    """Vanna = dDelta/dSigma = dVega/dS"""
+    if T<=0 or sigma<=0: return 0.0
+    try:
+        d1=(math.log(S/K)+(r+0.5*sigma**2)*T)/(sigma*math.sqrt(T))
+        d2=d1-sigma*math.sqrt(T)
+        nd1=math.exp(-0.5*d1**2)/math.sqrt(2*math.pi)
+        return -nd1*d2/sigma
+    except: return 0.0
+
+def compute_charm(S, K, T, r, sigma, opt_type="C"):
+    """Charm = dDelta/dT (zaman gecince delta degisimi)"""
+    if T<=0 or sigma<=0: return 0.0
+    try:
+        d1=(math.log(S/K)+(r+0.5*sigma**2)*T)/(sigma*math.sqrt(T))
+        d2=d1-sigma*math.sqrt(T)
+        nd1=math.exp(-0.5*d1**2)/math.sqrt(2*math.pi)
+        charm=-nd1*(2*r*T-d2*sigma*math.sqrt(T))/(2*T*sigma*math.sqrt(T))
+        return charm if opt_type=="C" else -charm
+    except: return 0.0
+
+def calc_vanna_charm_gex(summaries, spot, r=0.05):
+    """
+    Tum opsiyonlar icin Vanna + Charm GEX hesapla
+    Net Dealer Flow = GEX + Vanna_GEX + Charm_GEX
+    """
+    import time as _t
+    vanna_gex = 0.0
+    charm_gex = 0.0
+    now_ms = _t.time() * 1000
+
+    for s in summaries:
+        try:
+            parts = s.get("instrument_name","").split("-")
+            if len(parts) < 4: continue
+            K = float(parts[2])
+            opt_type = parts[3]  # C or P
+            exp_ms = float(s.get("expiration_timestamp", 0))
+            T = max((exp_ms - now_ms) / (365*24*3600*1000), 0.001)
+            iv = float(s.get("mark_iv") or s.get("ask_iv") or 50) / 100
+            oi = float(s.get("open_interest") or 0)
+            gamma = float(s.get("greeks",{}).get("gamma",0)) if s.get("greeks") else 0.0
+
+            vanna = compute_vanna(spot, K, T, r, iv)
+            charm = compute_charm(spot, K, T, r, iv, opt_type)
+
+            # Dealer pozisyonu: call satar, put alir
+            dealer_sign = -1 if opt_type=="C" else 1
+
+            # Vanna GEX: IV degisimine duyarlilik
+            vanna_gex += dealer_sign * vanna * oi * spot * spot / 1e6
+
+            # Charm GEX: Zaman gecince olusan pin cekimi
+            charm_gex += dealer_sign * charm * oi * spot / 1e6
+
+        except: continue
+
+    dsigma_dS = -0.002  # BTC tipik: spot duser IV yukselir
+    shadow_adjustment = vanna_gex * dsigma_dS * spot
+
+    return {
+        "vanna_gex_m": round(vanna_gex, 2),
+        "charm_gex_m": round(charm_gex, 2),
+        "shadow_adj_m": round(shadow_adjustment, 2),
+        "net_dealer_flow_m": round(vanna_gex + charm_gex, 2),
+    }
+
+def fetch_funding_rate():
+    """Deribit perp funding rate cek"""
+    import urllib.request, json as _j
+    try:
+        url = "https://www.deribit.com/api/v2/public/get_funding_rate_value?instrument_name=BTC-PERPETUAL&start_timestamp=0&end_timestamp=99999999999999"
+        req = urllib.request.Request(url, headers={"User-Agent":"gdive/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = _j.loads(r.read())
+        rate_8h = data.get("result", 0) or 0
+        annual = rate_8h * 3 * 365 * 100  # 8h → yillik %
+        return {"rate_8h": round(rate_8h * 100, 4), "annual_pct": round(annual, 2), "bias": "LONG" if rate_8h > 0 else "SHORT"}
+    except Exception as e:
+        print(f"[FUNDING] Hata: {e}")
+        return {"rate_8h": 0.0, "annual_pct": 0.0, "bias": "NEUTRAL"}
+
+def fetch_binance_closes(days=32):
+    """Binance'dan son 32 günlük günlük kapanış fiyatlarını çek"""
+    import urllib.request, json as _j
+    try:
+        url = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=33"
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = _j.loads(r.read())
+        return [float(k[4]) for k in data]  # kapanış fiyatları
+    except Exception as e:
+        print(f"[RV] Binance hatasi: {e}")
+        return []
+
+def calc_realized_vol(closes, window=30):
+    """Binance OHLCV kapanış fiyatlarından gerçek RV hesapla"""
+    if not closes or len(closes) < window + 1:
+        return 68.0  # fallback
+    try:
+        import math as _m
+        recent = closes[-(window+1):]
+        log_returns = [_m.log(recent[i]/recent[i-1]) for i in range(1,len(recent))]
+        mean = sum(log_returns)/len(log_returns)
+        variance = sum((r-mean)**2 for r in log_returns)/len(log_returns)
+        daily_vol = _m.sqrt(variance)
+        annual_vol = daily_vol * _m.sqrt(365) * 100
+        return round(annual_vol, 2)
+    except:
+        return 68.0
 try:
     from taleb_integration_patch import compute_taleb_metrics
     TALEB_OK = True
@@ -758,7 +869,9 @@ def build_data():
         "iv_rank": round(iv_rank, 2),
         "term_shape": term_shape,
         "pc_ratio": pc_ratio,
-        "hv_30d": 68.0,
+        "hv_30d": calc_realized_vol(fetch_binance_closes()),
+        "funding_rate": fetch_funding_rate(),
+        "vanna_charm": calc_vanna_charm_gex(summaries, spot),
         "option_score": option_score,
         "vol_score": vol_score,
         "momentum_score": momentum_score,

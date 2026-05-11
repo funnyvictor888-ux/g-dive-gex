@@ -695,9 +695,14 @@ def fetch_funding_rate():
         req = urllib.request.Request(url, headers={"User-Agent":"gdive/1.0"})
         with urllib.request.urlopen(req, timeout=8) as r:
             data = _j.loads(r.read())
-        rate_8h = data.get("result", 0) or 0
-        annual = rate_8h * 3 * 365 * 100  # 8h → yillik %
-        return {"rate_8h": round(rate_8h * 100, 4), "annual_pct": round(annual, 2), "bias": "LONG" if rate_8h > 0 else "SHORT"}
+        result = data.get("result", 0)
+        if isinstance(result, dict):
+            rate_8h = float(result.get("current_interest", 0) or 0)
+        else:
+            rate_8h = float(result or 0)
+        annual = rate_8h * 3 * 365 * 100
+        print(f"[FUNDING] rate_8h={rate_8h:.8f} annual={annual:.2f}%")
+        return {"rate_8h": round(rate_8h * 100, 6), "annual_pct": round(annual, 4), "bias": "LONG" if rate_8h > 0 else "SHORT" if rate_8h < 0 else "NEUTRAL"}
     except Exception as e:
         print(f"[FUNDING] Hata: {e}")
         return {"rate_8h": 0.0, "annual_pct": 0.0, "bias": "NEUTRAL"}

@@ -1237,6 +1237,9 @@ def run_cron():
         "call_walls": data.get("call_walls"),
         "put_walls": data.get("put_walls"),
         "term_ivs": data.get("term_ivs"),
+        "hv_30d": data.get("hv_30d"),
+        "funding_rate": data.get("funding_rate"),
+        "vanna_charm": data.get("vanna_charm"),
         "timestamp": __import__("datetime").datetime.utcnow().isoformat()
     }
     

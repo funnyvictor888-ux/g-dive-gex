@@ -920,7 +920,7 @@ def build_data():
                       for s in summaries if len(s.get("instrument_name","").split("-"))>=4],
         spot=spot,
         atm_iv=front_iv if front_iv else 50.0,
-        rv_7g=hv_30d if hv_30d and hv_30d>0 else 60.0,
+        rv_7g=float(data.get("hv_30d") or 60.0),
         net_gamma=(total_net_gex or 0)/1e6,
         max_pain=max_pain or spot,
         expiry_days=(expiry_info or {}).get("days_to_expiry",30) if expiry_info else 30,

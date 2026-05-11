@@ -910,7 +910,23 @@ def build_data():
         "expiry": expiry_info,
         "funding_manipulation": funding_manip,
         "carry_arb": carry_arb,
-        "taleb": None, "_source": "deribit_live",
+        "taleb": (compute_taleb_metrics(
+        options_data=[{"strike":float(s.get("instrument_name","0-0-0-C").split("-")[2]) if len(s.get("instrument_name","").split("-"))>2 else 80000,
+                       "expiry_days":max(1,(float(s.get("expiration_timestamp",0))-__import__("time").time()*1000)/86400000),
+                       "oi_btc":float(s.get("open_interest",0)),
+                       "type":s.get("instrument_name","C").split("-")[-1] if s.get("instrument_name") else "C",
+                       "iv":float(s.get("mark_iv") or 50),
+                       "gamma":float((s.get("greeks") or {}).get("gamma",0.001))}
+                      for s in summaries if len(s.get("instrument_name","").split("-"))>=4],
+        spot=spot,
+        atm_iv=front_iv if front_iv else 50.0,
+        rv_7g=hv_30d if hv_30d and hv_30d>0 else 60.0,
+        net_gamma=(total_net_gex or 0)/1e6,
+        max_pain=max_pain or spot,
+        expiry_days=(expiry_info or {}).get("days_to_expiry",30) if expiry_info else 30,
+        front_oi_usd=sum(float(s.get("open_interest",0)) for s in summaries[:50])*spot,
+        total_oi_usd=sum(float(s.get("open_interest",0)) for s in summaries)*spot,
+    ) if TALEB_OK else None), "_source": "deribit_live",
         "_elapsed": elapsed,
     }
 

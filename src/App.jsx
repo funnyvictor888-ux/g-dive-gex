@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { FlipZoneBadge } from "./FlipZoneBadge";
 
 const SUPABASE_URL = "https://gigkmjutnucssgwcnegn.supabase.co";
 const SUPABASE_KEY = "sb_publishable_jiFBPVGeFXKl1myvEjTI8g_KKUenCmW";
@@ -462,6 +463,7 @@ export default function App(){
         <div style={{position:"sticky",top:60}}>
           <div style={{color:C.muted,fontSize:9,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:10}}>Karar Piramidi</div>
           <DecisionPyramid {...dec}/>
+          <FlipZoneBadge flipZone={d?.flip_zone} C={C}/>
 
           {/* Risk özeti */}
           {risk&&<div style={{marginTop:10,background:C.card,border:`1px solid ${risk.killSwitch?C.red:C.border}`,borderRadius:8,padding:"10px 12px"}}>

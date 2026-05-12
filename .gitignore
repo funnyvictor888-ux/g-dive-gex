@@ -23,3 +23,16 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+# Flip-zone patch scripts ve backupları
+*.bak
+*.prebugfix
+apply_flip_zone_patches.py
+apply_frontend_flip_zone.py
+
+# Eski/yedek dosyalar
+__pycache__/
+gdive_server_old.py
+gdive-full-auto.html
+index-automated.html
+src/App_backup.jsx

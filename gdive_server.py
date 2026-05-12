@@ -10,6 +10,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 from urllib.parse import urlparse, parse_qs
+from flip_zone_gate import evaluate_flip_zone, fetch_atr_4h, to_dict as flip_zone_to_dict
 
 import os
 PORT = int(os.environ.get("PORT", 7432))
@@ -780,6 +781,24 @@ def read_state_log(n=200):
 
 _prev_weights_ma = {}
 
+def _compute_flip_zone(spot, hvl):
+    """Flip-zone v1: yön-agnostik ATR-relative hesap. Frontend pyramid yönüne göre override eder."""
+    try:
+        if not spot or not hvl:
+            return None
+        atr = fetch_atr_4h("BTCUSDT", period=14)
+        result = evaluate_flip_zone(
+            spot=spot,
+            flip_price=hvl,
+            pyramid_direction="neutral",
+            atr_pct=atr
+        )
+        return flip_zone_to_dict(result)
+    except Exception as e:
+        print(f"[flip_zone] hata: {e}")
+        return None
+
+
 def build_data():
     print("[INFO] Fetching Deribit data...")
     t0 = time.time()
@@ -926,7 +945,7 @@ def build_data():
         expiry_days=(expiry_info or {}).get("days_to_expiry",30) if expiry_info else 30,
         front_oi_usd=sum(float(s.get("open_interest",0)) for s in summaries[:50])*spot,
         total_oi_usd=sum(float(s.get("open_interest",0)) for s in summaries)*spot,
-    ) if TALEB_OK else None), "_source": "deribit_live",
+    ) if TALEB_OK else None), "flip_zone": _compute_flip_zone(spot, hvl), "_source": "deribit_live",
         "_elapsed": elapsed,
     }
 
@@ -1261,6 +1280,7 @@ def run_cron():
         "hv_30d": data.get("hv_30d"),
         "funding_rate": data.get("funding_rate"),
         "vanna_charm": data.get("vanna_charm"),
+        "flip_zone": data.get("flip_zone"),
         "timestamp": __import__("datetime").datetime.utcnow().isoformat()
     }
     
@@ -1450,5 +1470,5 @@ elif __name__ == "__main__":
     import http.server, socketserver
     PORT = int(os.environ.get("PORT", 7432))
     print(f"[INFO] Server basliyor port {PORT}")
-    with socketserver.TCPServer(("", PORT), GDiveHandler) as httpd:
+    with socketserver.TCPServer(("", PORT), Handler) as httpd:
         httpd.serve_forever()

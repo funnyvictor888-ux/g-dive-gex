@@ -1284,15 +1284,20 @@ def run_cron():
         "timestamp": __import__("datetime").datetime.utcnow().isoformat()
     }
     
+    print(f"[CRON-DEBUG] flip_zone gönderiliyor: {snapshot.get('flip_zone')}")
+    print(f"[CRON-DEBUG] snapshot keys: {list(snapshot.keys())}")
     try:
+        body_bytes = _json.dumps(snapshot).encode()
+        print(f"[CRON-DEBUG] body size: {len(body_bytes)} bytes")
+        print(f"[CRON-DEBUG] flip_zone in body: {b'flip_zone' in body_bytes}")
         req = urllib.request.Request(
             f"{SUPABASE_URL}/rest/v1/snapshots",
-            data=_json.dumps(snapshot).encode(),
+            data=body_bytes,
             headers=headers,
             method="POST"
         )
-        urllib.request.urlopen(req)
-        print("[CRON] Snapshot kaydedildi")
+        resp = urllib.request.urlopen(req)
+        print(f"[CRON] Snapshot kaydedildi (HTTP {resp.status})")
     except Exception as e:
         print(f"[CRON] Snapshot hatasi: {e}")
     

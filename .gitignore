@@ -36,3 +36,7 @@ gdive_server_old.py
 gdive-full-auto.html
 index-automated.html
 src/App_backup.jsx
+fix_pyramid_data_sources.py
+apply_pyramid_patches.py
+gdive_server.py.bak-pyramid*
+gdive_server.py.bak-4h-aggregate

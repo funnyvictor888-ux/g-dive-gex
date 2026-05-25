@@ -11,6 +11,7 @@ from urllib.request import urlopen, Request
 from urllib.error import URLError
 from urllib.parse import urlparse, parse_qs
 from flip_zone_gate import evaluate_flip_zone, fetch_atr_4h, to_dict as flip_zone_to_dict
+from pyramid import compute_pyramid as _compute_pyramid
 
 import os
 PORT = int(os.environ.get("PORT", 7432))
@@ -727,6 +728,40 @@ def fetch_binance_closes(days=32):
         print(f"[RV] Deribit OHLCV hatasi: {e}")
         return []
 
+def fetch_4h_closes_deribit(bars=60):
+    """Deribit BTC-PERPETUAL 4H closes — Pyramid Katman 3 için.
+    Deribit resolution=240 desteklemediği için 1H çekip 4'er grupluyoruz."""
+    import urllib.request, json as _j, time as _t
+    try:
+        now = int(_t.time() * 1000)
+        hours_needed = bars * 4  # her 4H bar = 4 x 1H
+        start = now - hours_needed * 3600 * 1000
+        url = (f"https://www.deribit.com/api/v2/public/get_tradingview_chart_data"
+               f"?instrument_name=BTC-PERPETUAL&resolution=60"
+               f"&start_timestamp={start}&end_timestamp={now}")
+        req = urllib.request.Request(url, headers={"User-Agent": "gdive/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = _j.loads(r.read())
+        ticks = data.get("result", {}).get("ticks", [])
+        closes_1h = data.get("result", {}).get("close", [])
+        if not closes_1h or not ticks or len(closes_1h) != len(ticks):
+            return None
+
+        # Her tick'in 4H slot'unu hesapla (UTC 4H bar başlangıçları)
+        # 4H bar boundary: hour % 4 == 0 (0, 4, 8, 12, 16, 20)
+        from collections import OrderedDict
+        slots = OrderedDict()
+        for t_ms, c in zip(ticks, closes_1h):
+            slot = (t_ms // (4 * 3600 * 1000)) * (4 * 3600 * 1000)
+            slots[slot] = c  # her slot'un son closing'i (en sondaki 1H bar)
+
+        result = list(slots.values())
+        return result if result else None
+    except Exception as e:
+        print(f"[pyramid] 4H closes hatasi: {e}")
+        return None
+
+
 def calc_realized_vol(closes, window=30):
     """Binance OHLCV kapanış fiyatlarından gerçek RV hesapla"""
     if not closes or len(closes) < window + 1:
@@ -780,6 +815,45 @@ def read_state_log(n=200):
     return rows[-n:]
 
 _prev_weights_ma = {}
+
+def _fetch_last_option_note():
+    """Supabase option_notes son satırının text'ini çek (Katman 4 için)."""
+    import os, urllib.request, json as _json
+    url = os.environ.get("SUPABASE_URL", "")
+    key = os.environ.get("SUPABASE_KEY", "")
+    if not (url and key):
+        return None
+    try:
+        key.encode("latin-1")
+        url.encode("latin-1")
+    except UnicodeEncodeError:
+        print("[pyramid] SUPABASE_URL/KEY non-ASCII karakter içeriyor, atlandı")
+        return None
+    try:
+        req = urllib.request.Request(
+            f"{url}/rest/v1/option_notes?order=id.desc&limit=1&select=text",
+            headers={"apikey": key, "Authorization": f"Bearer {key}"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            rows = _json.loads(resp.read().decode("utf-8"))
+        return rows[0].get("text") if rows else None
+    except Exception as e:
+        print(f"[pyramid] option_note fetch hatasi: {e}")
+        return None
+
+
+def _compute_pyramid_state(data):
+    """Karar Piramidi backend hesabı. Frontend buildDecisionLayers ile uyumlu."""
+    try:
+        closes_4h = fetch_4h_closes_deribit(bars=60)
+        # 4H bar yerine daily kullanıyorsa, en azından son 30+ değer var
+        last_note = _fetch_last_option_note()
+        result = _compute_pyramid(data, closes_4h=closes_4h, last_note_text=last_note)
+        return result
+    except Exception as e:
+        print(f"[pyramid] hata: {e}")
+        return None
+
 
 def _compute_flip_zone(spot, hvl):
     """Flip-zone v1: yön-agnostik ATR-relative hesap. Frontend pyramid yönüne göre override eder."""
@@ -1281,6 +1355,13 @@ def run_cron():
         "funding_rate": data.get("funding_rate"),
         "vanna_charm": data.get("vanna_charm"),
         "flip_zone": data.get("flip_zone"),
+        # ─── Karar Piramidi backend hesabı (Yaklaşım A) ───
+        **(lambda _p: {
+            "pyramid_total":    _p.get("total_score") if _p else None,
+            "pyramid_decision": _p.get("decision") if _p else None,
+            "pyramid_blocked":  _p.get("blocked") if _p else None,
+            "pyramid_layers":   _p.get("layers") if _p else None,
+        })(_compute_pyramid_state(data)),
         "timestamp": __import__("datetime").datetime.utcnow().isoformat()
     }
     

@@ -159,15 +159,72 @@ def get_btc_price():
     except:
         return None
 
+def _deribit_4h_ohlcv(limit=250):
+    """Deribit BTC-PERPETUAL 1H verisini 4H'a aggregate ederek OHLC döndür.
+    Format: Binance ile uyumlu list of {"o","h","l","c"}.
+    GitHub Actions runner'lardan Binance kısıtlı olduğunda fallback."""
+    try:
+        import time as _t
+        now = int(_t.time() * 1000)
+        # Her 4H bar = 4 x 1H, ekstra buffer için 5x al
+        hours = limit * 4 + 10
+        start = now - hours * 3600 * 1000
+        url = (f"https://www.deribit.com/api/v2/public/get_tradingview_chart_data"
+               f"?instrument_name=BTC-PERPETUAL&resolution=60"
+               f"&start_timestamp={start}&end_timestamp={now}")
+        req = urllib.request.Request(url, headers={"User-Agent": "gdive/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read())
+        result = data.get("result", {})
+        ticks = result.get("ticks", [])
+        opens = result.get("open", [])
+        highs = result.get("high", [])
+        lows = result.get("low", [])
+        closes = result.get("close", [])
+        if not ticks or len(ticks) != len(closes):
+            return []
+
+        # 4H slot bazlı OHLC aggregation
+        # slot = (timestamp_ms // (4 * 3600 * 1000)) * (4 * 3600 * 1000)
+        from collections import OrderedDict
+        slots = OrderedDict()
+        for ts_ms, o, h, l, c in zip(ticks, opens, highs, lows, closes):
+            slot = (ts_ms // (4 * 3600 * 1000)) * (4 * 3600 * 1000)
+            if slot not in slots:
+                slots[slot] = {"o": o, "h": h, "l": l, "c": c}
+            else:
+                # high = max, low = min, close = son (kronolojik sırada)
+                bar = slots[slot]
+                bar["h"] = max(bar["h"], h)
+                bar["l"] = min(bar["l"], l)
+                bar["c"] = c  # son 1H bar'ın close'u
+
+        bars = list(slots.values())
+        return bars[-limit:] if len(bars) > limit else bars
+    except Exception as e:
+        print(f"[TRADER] Deribit fallback hatasi: {e}")
+        return []
+
+
 def get_binance_ohlcv(interval="4h", limit=250):
+    """Önce Binance dener. Boş dönerse (GitHub runner'larda sık olur) Deribit'e fallback."""
     try:
         url = f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval={interval}&limit={limit}"
         req = urllib.request.Request(url)
-        with urllib.request.urlopen(req) as r:
+        with urllib.request.urlopen(req, timeout=10) as r:
             data = json.loads(r.read())
-        return [{"o":float(k[1]),"h":float(k[2]),"l":float(k[3]),"c":float(k[4])} for k in data]
-    except:
+        candles = [{"o":float(k[1]),"h":float(k[2]),"l":float(k[3]),"c":float(k[4])} for k in data]
+        if candles and len(candles) >= 50:
+            return candles
+    except Exception as e:
+        print(f"[TRADER] Binance fail: {e}")
+
+    # Fallback: Deribit (sadece 4h destekli, başka interval gelirse uyar)
+    if interval != "4h":
+        print(f"[TRADER] Deribit fallback sadece 4h destekliyor, istenen: {interval}")
         return []
+    print("[TRADER] Deribit fallback'e geciliyor (1H aggregate)")
+    return _deribit_4h_ohlcv(limit)
 
 def ema(prices, period):
     k = 2/(period+1); e = prices[0]

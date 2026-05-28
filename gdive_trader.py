@@ -108,6 +108,75 @@ STRATEGIES = {
 # Aktif strateji — env'den al, yoksa C1
 ACTIVE_STRATEGY = os.environ.get("GDIVE_STRATEGY", "C1")
 
+# ── REALİSTİK PnL HELPER ─────────────────────────────────────────
+# Gross paper PnL'yi gerçek dünya maliyetleriyle indirir.
+# Oranlar konservatif tahmin — Deribit BTC-PERPETUAL standardı.
+COST_CONFIG = {
+    "taker_fee_rate": 0.0005,       # 0.05% per leg (Deribit taker)
+    "funding_rate_daily": 0.00027,  # ~10% yıllık / 365
+    "slippage_rate": 0.0002,        # 0.02% per leg (likit BTC)
+}
+
+
+def _calc_realistic_pnl(entry, exit_price, size, direction, opened_date_str, leverage=1):
+    """
+    Gross PnL hesabını yapıp maliyetleri düşer.
+    Returns: (net_pnl_rounded, cost_breakdown_dict)
+
+    direction: "LONG" or "SHORT"
+    opened_date_str: "YYYY-MM-DD HH:MM" formatı
+    """
+    if direction == "LONG":
+        gross_pnl = (exit_price - entry) * size * leverage
+    else:
+        gross_pnl = (entry - exit_price) * size * leverage
+
+    # Notional değerler (fee/slippage için)
+    notional_in = entry * size
+    notional_out = exit_price * size
+
+    # Maliyetler
+    fee_in = notional_in * COST_CONFIG["taker_fee_rate"]
+    fee_out = notional_out * COST_CONFIG["taker_fee_rate"]
+    slip_in = notional_in * COST_CONFIG["slippage_rate"]
+    slip_out = notional_out * COST_CONFIG["slippage_rate"]
+
+    # Funding — tutma süresi
+    days_held = 0.0
+    try:
+        from datetime import datetime as _dt
+        opened_dt = _dt.strptime(opened_date_str, "%Y-%m-%d %H:%M")
+        elapsed = (_dt.utcnow() - opened_dt).total_seconds() / 86400.0
+        days_held = max(elapsed, 0.0)
+    except Exception:
+        days_held = 0.5  # fallback varsayım
+
+    avg_notional = (notional_in + notional_out) / 2.0
+    funding = avg_notional * COST_CONFIG["funding_rate_daily"] * days_held
+
+    total_cost = fee_in + fee_out + slip_in + slip_out + funding
+    net_pnl = gross_pnl - total_cost
+
+    breakdown = {
+        "gross": round(gross_pnl, 2),
+        "fee": round(fee_in + fee_out, 2),
+        "slip": round(slip_in + slip_out, 2),
+        "funding": round(funding, 2),
+        "days": round(days_held, 2),
+        "cost": round(total_cost, 2),
+        "net": round(net_pnl, 2),
+    }
+    return round(net_pnl, 2), breakdown
+
+
+def _trade_opened_date(open_trades, trade_id):
+    """Açık trade listesinden trade'in date alanını çek."""
+    for t in open_trades:
+        if str(t.get("trade_id")) == str(trade_id):
+            return t.get("date", "")
+    return ""
+
+
 def supa_get(path):
     try:
         req = urllib.request.Request(
@@ -374,7 +443,7 @@ def run_trader():
             
             # DTE exit kuralı
             if days_to_exp <= cfg["dte_exit"] and not partial_closed:
-                pnl = (price - entry) * size * cfg["leverage"]
+                pnl, _cost = _calc_realistic_pnl(entry, price, size, "LONG", t.get("date",""), cfg["leverage"])
                 if pnl > 0:
                     supa_patch(f"trades?trade_id=eq.{trade_id}", {
                         "status":"CLOSED","exit_price":price,
@@ -400,7 +469,7 @@ def run_trader():
             
             # Stop
             if price <= stop:
-                pnl = (stop - entry) * size * cfg["leverage"]
+                pnl, _cost = _calc_realistic_pnl(entry, stop, size, "LONG", t.get("date",""), cfg["leverage"])
                 supa_patch(f"trades?trade_id=eq.{trade_id}", {
                     "status":"CLOSED","exit_price":stop,
                     "exit_date":datetime.utcnow().isoformat(),
@@ -411,7 +480,7 @@ def run_trader():
             
             # TP
             elif price >= tp:
-                pnl = (tp - entry) * size * cfg["leverage"]
+                pnl, _cost = _calc_realistic_pnl(entry, tp, size, "LONG", t.get("date",""), cfg["leverage"])
                 supa_patch(f"trades?trade_id=eq.{trade_id}", {
                     "status":"CLOSED","exit_price":tp,
                     "exit_date":datetime.utcnow().isoformat(),
@@ -422,7 +491,7 @@ def run_trader():
             
             # Rejim tersine döndü
             elif bear_tech and not bull_tech:
-                pnl = (price - entry) * size * cfg["leverage"]
+                pnl, _cost = _calc_realistic_pnl(entry, price, size, "LONG", t.get("date",""), cfg["leverage"])
                 supa_patch(f"trades?trade_id=eq.{trade_id}", {
                     "status":"CLOSED","exit_price":price,
                     "exit_date":datetime.utcnow().isoformat(),
@@ -437,7 +506,7 @@ def run_trader():
             
             # DTE exit
             if days_to_exp <= cfg["dte_exit"] and not partial_closed:
-                pnl = (entry - price) * size * cfg["leverage"]
+                pnl, _cost = _calc_realistic_pnl(entry, price, size, "SHORT", t.get("date",""), cfg["leverage"])
                 if pnl > 0:
                     supa_patch(f"trades?trade_id=eq.{trade_id}", {
                         "status":"CLOSED","exit_price":price,
@@ -463,7 +532,7 @@ def run_trader():
             
             # Stop
             if price >= stop:
-                pnl = (entry - stop) * size * cfg["leverage"]
+                pnl, _cost = _calc_realistic_pnl(entry, stop, size, "SHORT", t.get("date",""), cfg["leverage"])
                 supa_patch(f"trades?trade_id=eq.{trade_id}", {
                     "status":"CLOSED","exit_price":stop,
                     "exit_date":datetime.utcnow().isoformat(),
@@ -473,7 +542,7 @@ def run_trader():
                 print(f"[TRADER] STOP SHORT @${stop:.0f} PnL:${pnl:.0f}")
             
             elif price <= tp:
-                pnl = (entry - tp) * size * cfg["leverage"]
+                pnl, _cost = _calc_realistic_pnl(entry, tp, size, "SHORT", t.get("date",""), cfg["leverage"])
                 supa_patch(f"trades?trade_id=eq.{trade_id}", {
                     "status":"CLOSED","exit_price":tp,
                     "exit_date":datetime.utcnow().isoformat(),
@@ -483,7 +552,7 @@ def run_trader():
                 print(f"[TRADER] TP SHORT @${tp:.0f} PnL:${pnl:.0f}")
             
             elif bull_tech and not bear_tech:
-                pnl = (entry - price) * size * cfg["leverage"]
+                pnl, _cost = _calc_realistic_pnl(entry, price, size, "SHORT", t.get("date",""), cfg["leverage"])
                 supa_patch(f"trades?trade_id=eq.{trade_id}", {
                     "status":"CLOSED","exit_price":price,
                     "exit_date":datetime.utcnow().isoformat(),

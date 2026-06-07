@@ -41,7 +41,7 @@ def compute_vanna(S, K, T, r, sigma):
 def compute_shadow_gex(
     options_data: list[dict],
     spot: float,
-    dsigma_dS: float = -0.002,   # BTC tipik: vol her $1K düşüşte ~%0.2 artar
+    dsigma_dS: float = -2e-6,   # per $1 spot; = 0.2 vol pts (0.002) per $1K. FIX: was -0.002 (1000x too large), inflated shadow GEX ~257x
 ) -> dict:
     """
     Tüm opsiyon pozisyonları için Shadow GEX hesaplar.

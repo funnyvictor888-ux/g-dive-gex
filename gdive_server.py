@@ -1497,7 +1497,7 @@ def run_cron():
             
             # 1 saat onceki kayitlari guncelle (direction check)
             one_hour_ago = (_dt_taleb.datetime.utcnow() - _dt_taleb.timedelta(hours=1)).isoformat()
-            check_url = f"{SUPABASE_URL}/rest/v1/taleb_shadow_log?timestamp=gte.{one_hour_ago[:19]}&spot_1h_later=is.null&limit=5"
+            check_url = f"{SUPABASE_URL}/rest/v1/taleb_shadow_log?timestamp=lte.{one_hour_ago[:19]}&spot_1h_later=is.null&order=timestamp.asc&limit=5"
             check_req2 = urllib.request.Request(
                 check_url,
                 headers={

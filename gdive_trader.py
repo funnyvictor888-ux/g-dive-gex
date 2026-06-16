@@ -331,6 +331,27 @@ def get_equity_curve_mult(trades_closed, cfg):
         return 1.0
     return cfg["eq_down_risk"]
 
+
+def _log_alignment(snapshot_ts=None, spot=None, rsi=None, e9=None, e21=None,
+                   e50=None, e200=None, atr=None, bull_tech=None, bear_tech=None,
+                   gex=None, hvl=None, flip_near=None, regime=None,
+                   pyramid_decision=None, long_signal=None, short_signal=None,
+                   trade_opened=False, block_reason=None):
+    try:
+        from datetime import datetime as _dt
+        row = {"timestamp": _dt.utcnow().isoformat(), "snapshot_ts": snapshot_ts,
+               "spot": spot, "rsi": rsi, "e9": e9, "e21": e21, "e50": e50,
+               "e200": e200, "atr": atr, "bull_tech": bull_tech, "bear_tech": bear_tech,
+               "gex": gex, "hvl": hvl, "flip_near": flip_near, "regime": regime,
+               "pyramid_decision": pyramid_decision, "long_signal": long_signal,
+               "short_signal": short_signal, "trade_opened": trade_opened,
+               "block_reason": block_reason}
+        supa_post("alignment_log", row)
+        print(f"[ALIGN_LOG] {block_reason} bull={bull_tech} bear={bear_tech} long={long_signal} short={short_signal}")
+    except Exception as _e:
+        print(f"[ALIGN_LOG ERR] {_e}")
+
+
 def run_trader():
     cfg = STRATEGIES.get(ACTIVE_STRATEGY, STRATEGIES["C1"])
     print(f"[TRADER] {datetime.utcnow().isoformat()} — Strateji: {cfg['name']}")
@@ -400,6 +421,7 @@ def run_trader():
         print(f"[TRADER] Tech: RSI={rsi_v:.1f} E9={e9[n]:.0f} E21={e21[n]:.0f} E200={e200[n]:.0f} ATR={atr_v:.0f}")
         print(f"[TRADER] bull_tech={bull_tech} bear_tech={bear_tech}")
     else:
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, gex=gex, hvl=hvl, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="tech_insufficient")
         print("[TRADER] Teknik veri yetersiz"); return
 
     # Açık trade'leri al
@@ -407,9 +429,11 @@ def run_trader():
     closed_trades = supa_get("trades?status=eq.CLOSED&order=id.desc&limit=50")
     print(f"[TRADER] Açık: {len(open_trades)} | Kapalı son50: {len(closed_trades)}")
     if check_halt_status():
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="manual_halt")
         print("[TRADER] MANUAL HALT aktif"); return
     ok, violations = check_invariants(open_trades, closed_trades, price)
     if not ok:
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="invariant")
         print(f"[TRADER] INVARIANT: {violations}"); log_halt("AUTO", violations); return
     print("[TRADER] Invariants OK")
 
@@ -563,13 +587,17 @@ def run_trader():
 
     # Yeni trade aç
     if open_trades:
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="open_trade")
         print("[TRADER] Açık trade var — yeni açılmıyor"); return
     
     if flip_near:
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="flip_near")
         print(f"[TRADER] Flip yakın — bekle"); return
     if expiry_day:
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="expiry_day")
         print("[TRADER] Expiry günü — bekle"); return
     if iv_crush:
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="iv_crush")
         print(f"[TRADER] IV Crush ({term_shape}, IV:{iv_rank:.0f}%) — bekle"); return
 
     # Sinyal
@@ -597,6 +625,7 @@ def run_trader():
         }
         supa_post("trades", tr)
         print(f"[TRADER] ✅ LONG @${e:.0f} Stop:${sp:.0f} TP:${tp2:.0f} Size:{sz} RR:{rr}")
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), long_signal=long_signal, short_signal=short_signal, trade_opened=True, block_reason="opened_long")
 
     elif short_signal:
         e = price
@@ -617,9 +646,11 @@ def run_trader():
         }
         supa_post("trades", tr)
         print(f"[TRADER] ✅ SHORT @${e:.0f} Stop:${sp:.0f} TP:${tp2:.0f} Size:{sz} RR:{rr}")
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), long_signal=long_signal, short_signal=short_signal, trade_opened=True, block_reason="opened_short")
     
     else:
         print(f"[TRADER] Sinyal yok — BEKLE")
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), long_signal=long_signal, short_signal=short_signal, trade_opened=False, block_reason="no_signal")
 
     print("[TRADER] Tamamlandı")
 

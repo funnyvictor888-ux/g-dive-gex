@@ -1494,6 +1494,12 @@ def run_cron():
             )
             urllib.request.urlopen(log_req)
             print(f"[TALEB] Shadow log kaydedildi: signal={taleb_signal} pin={pin_score:.1f} amp={amplifier:.2f}")
+            # -- Gamma Fatigue (observe-only, henuz trade mantigina girmiyor) --
+            try:
+                from gamma_fatigue_integration import run_gamma_fatigue_tick
+                run_gamma_fatigue_tick(data, pin, shadow_gex, rehedge)
+            except Exception as e:
+                print(f"[GAMMA_FATIGUE] hata: {e}")
             
             # 1 saat onceki kayitlari guncelle (direction check)
             one_hour_ago = (_dt_taleb.datetime.utcnow() - _dt_taleb.timedelta(hours=1)).isoformat()

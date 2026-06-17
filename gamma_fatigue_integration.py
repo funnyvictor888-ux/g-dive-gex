@@ -138,6 +138,7 @@ def run_gamma_fatigue_tick(data: dict, pin: dict, shadow_gex: dict, rehedge: dic
     from deribit_flow_fetcher import DeribitFlowFetcher
     from gamma_fatigue import compute_gamma_fatigue
     from rehedge_band import solve_rehedge_band
+    from rehedge_toxicity_adjustment import compute_skewed_band
 
     state = load_gamma_fatigue_state()
     fetcher = DeribitFlowFetcher(currency="BTC")
@@ -160,6 +161,13 @@ def run_gamma_fatigue_tick(data: dict, pin: dict, shadow_gex: dict, rehedge: dic
         toxicity_belief=gf_result["toxicity_belief"],
     )
 
+    skewed_result = compute_skewed_band(
+        spot=data.get("spot"),
+        atm_iv=data.get("front_iv") or 50.0,
+        net_gamma=(data.get("total_net_gex") or 0) / 1e6,
+        toxicity_belief=gf_result["toxicity_belief"],
+    )
+
     save_gamma_fatigue_state({
         "last_check_ms": int(time.time() * 1000),
         "put_delta_history": gf_result["_new_put_delta_history"],
@@ -176,6 +184,8 @@ def run_gamma_fatigue_tick(data: dict, pin: dict, shadow_gex: dict, rehedge: dic
         "toxicity_belief": gf_result["toxicity_belief"],
         "backward_induction_band_pct": rb_result["band_pct"],
         "static_band_pct": rehedge.get("band_pct"),  # mevcut statik modelle yan yana
+        "skewed_lower_band_pct": skewed_result["lower_band_pct"],
+        "skewed_upper_band_pct": skewed_result["upper_band_pct"],
     })
 
     print(

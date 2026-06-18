@@ -352,6 +352,16 @@ def _log_alignment(snapshot_ts=None, spot=None, rsi=None, e9=None, e21=None,
         print(f"[ALIGN_LOG ERR] {_e}")
 
 
+def _trade_age_days(date_str):
+    """Trade acilis tarihinden (\"YYYY-MM-DD HH:MM\") bugune kadar GUN sayisi."""
+    try:
+        from datetime import datetime as _dt
+        opened = _dt.strptime(date_str.strip()[:16], "%Y-%m-%d %H:%M")
+        return (_dt.utcnow() - opened).total_seconds() / 86400.0
+    except Exception:
+        return 0.0
+
+
 def run_trader():
     cfg = STRATEGIES.get(ACTIVE_STRATEGY, STRATEGIES["C1"])
     print(f"[TRADER] {datetime.utcnow().isoformat()} — Strateji: {cfg['name']}")
@@ -460,22 +470,23 @@ def run_trader():
         direction = t.get("dir", "")
         trade_id = t.get("trade_id", t.get("id"))
         partial_closed = t.get("partial_closed", False)
+        trade_days_held = _trade_age_days(t.get("date", ""))
 
         if direction == "LONG":
             unreal = (price - entry) * size
             print(f"[TRADER] LONG #{trade_id} Entry:{entry:.0f} Stop:{stop:.0f} TP:{tp:.0f} Unrealized:${unreal:.0f}")
             
-            # DTE exit kuralı
-            if days_to_exp <= cfg["dte_exit"] and not partial_closed:
+            # Zaman cikisi (trade suresi >= dte_exit gun, partial dahil, sadece karda)
+            if trade_days_held >= cfg["dte_exit"]:
                 pnl, _cost = _calc_realistic_pnl(entry, price, size, "LONG", t.get("date",""), cfg["leverage"])
                 if pnl > 0:
                     supa_patch(f"trades?trade_id=eq.{trade_id}", {
                         "status":"CLOSED","exit_price":price,
                         "exit_date":datetime.utcnow().isoformat(),
                         "pnl":round(pnl,2),
-                        "notes":(t.get("notes","") + f" |DTE_EXIT d={days_to_exp}")
+                        "notes":(t.get("notes","") + f" |TIME_EXIT held={trade_days_held:.1f}d")
                     })
-                    print(f"[TRADER] DTE EXIT LONG @${price:.0f} PnL:${pnl:.0f}")
+                    print(f"[TRADER] TIME EXIT LONG @${price:.0f} held={trade_days_held:.1f}d PnL:${pnl:.0f}")
                     continue
             
             # 1/3 TP exit
@@ -528,17 +539,17 @@ def run_trader():
             unreal = (entry - price) * size
             print(f"[TRADER] SHORT #{trade_id} Entry:{entry:.0f} Stop:{stop:.0f} TP:{tp:.0f} Unrealized:${unreal:.0f}")
             
-            # DTE exit
-            if days_to_exp <= cfg["dte_exit"] and not partial_closed:
+            # Zaman cikisi (trade suresi >= dte_exit gun, partial dahil, sadece karda)
+            if trade_days_held >= cfg["dte_exit"]:
                 pnl, _cost = _calc_realistic_pnl(entry, price, size, "SHORT", t.get("date",""), cfg["leverage"])
                 if pnl > 0:
                     supa_patch(f"trades?trade_id=eq.{trade_id}", {
                         "status":"CLOSED","exit_price":price,
                         "exit_date":datetime.utcnow().isoformat(),
                         "pnl":round(pnl,2),
-                        "notes":(t.get("notes","") + f" |DTE_EXIT d={days_to_exp}")
+                        "notes":(t.get("notes","") + f" |TIME_EXIT held={trade_days_held:.1f}d")
                     })
-                    print(f"[TRADER] DTE EXIT SHORT @${price:.0f} PnL:${pnl:.0f}")
+                    print(f"[TRADER] TIME EXIT SHORT @${price:.0f} held={trade_days_held:.1f}d PnL:${pnl:.0f}")
                     continue
             
             # 1/3 TP exit

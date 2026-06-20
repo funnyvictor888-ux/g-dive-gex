@@ -1456,13 +1456,21 @@ def run_cron():
             rehedge = taleb.get("rehedge_band", {})
             pin = taleb.get("pin_risk", {})
             
-            # Sinyal hesapla -- yonlu: Shadow GEX islaret + risk filtresi
+            # Sinyal hesapla -- yonlu: dogrulanmis GEX islareti + risk filtresi
             # v1 (eski): risk/guvenlik sinyaliydi (yonsuz, her zaman 1 donuyordu)
-            # v2 (yeni): Shadow GEX'in isareti temel yon, pin/amplifier risk filtresi
+            # v2 (hatali): shadow_gex.regime kullanildi -- bu TUM zincirdeki
+            #   call/put OI dengesizligini olcuyor, anlik fiyat yonunu degil.
+            #   BTC'de OTM call OI yapisal olarak put'tan fazla olma egiliminde
+            #   (kaldiracli yukselis bahisleri ucuz), bu yuzden SHADOW_POSITIVE
+            #   neredeyse hep cikiyordu -- canli veride dogrulandi (15/15 satir=1).
+            # v3 (duzeltme): total_net_gex'in isareti kullaniliyor -- bu deger
+            #   spot-yakin strike'lara odakli, regime etiketini (BULLISH/BEARISH_*)
+            #   zaten besleyen, sistemin geri kalaninin guvendigi metrik.
             pin_score = pin.get("pin_score", 0) or 0
             amplifier = shadow_gex.get("gex_amplifier", 1) or 1
             band_pct = rehedge.get("band_pct", 0) or 0
-            shadow_direction = 1 if shadow_gex.get("regime") == "SHADOW_POSITIVE" else -1
+            net_gex_now = data.get("total_net_gex") or 0
+            shadow_direction = 1 if net_gex_now > 0 else -1
 
             if pin_score >= 7.5:
                 # Pin riski cok yuksek -> yon tahmin etme, signal sifirla

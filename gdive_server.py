@@ -271,6 +271,23 @@ def fetch_book_summary():
     return r if r else []
 
 # ── Term structure için ATM IV ─────────────────────────────────────
+def _exp_to_days(exp_str):
+    """Deribit expiry '8JUN26' / '16JUN26' -> bugune kadar gun (locale-bagimsiz)."""
+    import re
+    from datetime import datetime
+    MONTHS = {"JAN":1,"FEB":2,"MAR":3,"APR":4,"MAY":5,"JUN":6,
+              "JUL":7,"AUG":8,"SEP":9,"OCT":10,"NOV":11,"DEC":12}
+    try:
+        m = re.match(r"(\d{1,2})([A-Z]{3})(\d{2})", exp_str.strip().upper())
+        if not m:
+            return 30.0
+        day, mon, yr = int(m.group(1)), MONTHS[m.group(2)], 2000+int(m.group(3))
+        exp = datetime(yr, mon, day)
+        return max((exp - datetime.utcnow()).total_seconds()/86400.0, 0.01)
+    except Exception:
+        return 30.0
+
+
 def fetch_term_structure(spot, summaries):
     from collections import defaultdict
     by_expiry = defaultdict(list)
@@ -294,7 +311,7 @@ def fetch_term_structure(spot, summaries):
         atm_opts = [o for o in opts if o["strike"] == atm["strike"]]
         if atm_opts:
             iv_avg = sum(o["iv"] for o in atm_opts) / len(atm_opts)
-            term.append({"expiry": expiry, "iv": round(iv_avg, 2)})
+            term.append({"expiry": expiry, "iv": round(iv_avg, 2), "days": _exp_to_days(expiry)})
 
     return term[:8]
 
@@ -1012,7 +1029,7 @@ def build_data():
                        "gamma":float((s.get("greeks") or {}).get("gamma",0.001))}
                       for s in summaries if len(s.get("instrument_name","").split("-"))>=4],
         spot=spot,
-        atm_iv=front_iv if front_iv else 50.0,
+        atm_iv=(min(term_ivs, key=lambda t: abs(t.get("days",999)-7.0))["iv"] if term_ivs else (front_iv if front_iv else 50.0)),
         rv_7g=calc_realized_vol(fetch_binance_closes()) or 60.0,
         net_gamma=(total_net_gex or 0)/1e6,
         max_pain=max_pain or spot,

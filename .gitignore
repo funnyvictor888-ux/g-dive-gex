@@ -40,3 +40,11 @@ fix_pyramid_data_sources.py
 apply_pyramid_patches.py
 gdive_server.py.bak-pyramid*
 gdive_server.py.bak-4h-aggregate
+
+# Gecici patch/analiz scriptleri (2026-06, alignment/dtefix/volregime/backtest helper)
+_*.py
+fix_*.py
+src/TestChart.jsx
+
+# Tarihli yedekler (gdive_*.py.bak-<isim>-<tarih>)
+*.bak-*

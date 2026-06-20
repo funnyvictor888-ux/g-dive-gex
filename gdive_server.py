@@ -1456,19 +1456,22 @@ def run_cron():
             rehedge = taleb.get("rehedge_band", {})
             pin = taleb.get("pin_risk", {})
             
-            # Sinyal hesapla
+            # Sinyal hesapla -- yonlu: Shadow GEX islaret + risk filtresi
+            # v1 (eski): risk/guvenlik sinyaliydi (yonsuz, her zaman 1 donuyordu)
+            # v2 (yeni): Shadow GEX'in isareti temel yon, pin/amplifier risk filtresi
             pin_score = pin.get("pin_score", 0) or 0
             amplifier = shadow_gex.get("gex_amplifier", 1) or 1
             band_pct = rehedge.get("band_pct", 0) or 0
-            
+            shadow_direction = 1 if shadow_gex.get("regime") == "SHADOW_POSITIVE" else -1
+
             if pin_score >= 7.5:
-                taleb_signal = -1
-            elif amplifier > 1.3:
-                taleb_signal = -1
-            elif pin_score < 3 and amplifier < 1.1:
-                taleb_signal = 1
-            else:
+                # Pin riski cok yuksek -> yon tahmin etme, signal sifirla
                 taleb_signal = 0
+            elif amplifier > 1.3:
+                # Yuksek amplifier: Shadow GEX mevcut yonun tersine surpriz yaratabilir
+                taleb_signal = shadow_direction * -1
+            else:
+                taleb_signal = shadow_direction
             
             log_entry = {
                 "timestamp": _dt_taleb.datetime.utcnow().isoformat(),

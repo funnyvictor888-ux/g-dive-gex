@@ -100,13 +100,14 @@ def log_gamma_fatigue_observe(entry: dict) -> None:
     urllib.request.urlopen(req)
 
 
-def backfill_gamma_fatigue_observe() -> None:
+def backfill_gamma_fatigue_observe(current_spot: float) -> None:
     """
-    1 saat onceki kayitlari guncelle (direction check).
-    DIKKAT: taleb_shadow_log'daki hatayi BURADA TEKRARLAMIYORUZ —
-    operator 'lte', 'gte' degil. order=timestamp.asc ile en eskiden
-    basliyoruz.
+    1 saat onceki kayitlari guncelle (band isabeti / pct_move).
+    operator 'lte', order=timestamp.asc (taleb hatasini tekrarlamiyoruz).
+    current_spot: cron'da elde olan data["spot"].
     """
+    if not current_spot:
+        return
     one_hour_ago = (datetime.now(timezone.utc) - __import__("datetime").timedelta(hours=1)).isoformat()
     url = (
         f"{os.environ['SUPABASE_URL']}/rest/v1/gamma_fatigue_observe_log"
@@ -117,9 +118,33 @@ def backfill_gamma_fatigue_observe() -> None:
     if not old_rows:
         return
 
-    # mevcut spot'u almak icin build_data() ya da hafif bir index-price cagrisi
-    # gdive_server.py'de zaten elde olan 'data["spot"]' kullanilmali — burada
-    # sadece imza gosteriliyor, gercek entegrasyonda current_spot parametre olur.
+    updated = 0
+    for row in old_rows:
+        old_spot = row.get("spot") or 0
+        if not old_spot:
+            continue
+        pct_move = (current_spot - old_spot) / old_spot * 100.0
+        # fatigue isabeti: fatigue_signal=True iken static_band'i asan hareket
+        # olduysa "yakaladi" say; fatigue yoksa None (notr).
+        fatigue = row.get("fatigue_signal", False)
+        static_band = row.get("static_band_pct") or 0.1
+        correct = (abs(pct_move) > static_band) if fatigue else None
+        patch = {
+            "spot_1h_later": round(current_spot, 2),
+            "pct_move": round(pct_move, 3),
+            "direction_correct": correct,
+        }
+        purl = f"{os.environ['SUPABASE_URL']}/rest/v1/gamma_fatigue_observe_log?id=eq.{row['id']}"
+        preq = urllib.request.Request(
+            purl,
+            data=json.dumps(patch).encode(),
+            headers={**_headers(), "Prefer": "return=minimal"},
+            method="PATCH",
+        )
+        urllib.request.urlopen(preq)
+        updated += 1
+    if updated:
+        print(f"[GAMMA_FATIGUE] backfill: {updated} eski kayit guncellendi")
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -193,5 +218,10 @@ def run_gamma_fatigue_tick(data: dict, pin: dict, shadow_gex: dict, rehedge: dic
         f"sat={gf_result['saturation_pct']}% belief={gf_result['toxicity_belief']} "
         f"bi_band={rb_result['band_pct']}% static_band={rehedge.get('band_pct')}%"
     )
+
+    try:
+        backfill_gamma_fatigue_observe(current_spot=data.get("spot", 0))
+    except Exception as _e:
+        print(f"[GAMMA_FATIGUE] backfill hata: {_e}")
 
     return {"gamma_fatigue": gf_result, "rehedge_backward_induction": rb_result}

@@ -216,9 +216,11 @@ def backtest(candles, cfg):
                 elif bar_high >= tp:
                     exit_price = tp
                     exit_reason = "TP"
-                elif bars_held >= cfg["dte_exit_bars"]:
+                elif bars_held >= cfg["dte_exit_bars"] and price > entry:
+                    # TIME_EXIT: sure doldu VE karda (canli gdive_trader.py birebir).
+                    # Zararda ise pozisyonu TUT, stop'a birak.
                     exit_price = price
-                    exit_reason = "DTE"
+                    exit_reason = "TIME_EXIT"
             else:  # SHORT
                 if bar_high >= stop:
                     exit_price = stop
@@ -226,9 +228,10 @@ def backtest(candles, cfg):
                 elif bar_low <= tp:
                     exit_price = tp
                     exit_reason = "TP"
-                elif bars_held >= cfg["dte_exit_bars"]:
+                elif bars_held >= cfg["dte_exit_bars"] and price < entry:
+                    # TIME_EXIT: sure doldu VE karda (SHORT icin price < entry).
                     exit_price = price
-                    exit_reason = "DTE"
+                    exit_reason = "TIME_EXIT"
 
             if exit_price is not None:
                 pnl_data = calc_realistic_pnl(entry, exit_price, size, direction, days_held, cfg["leverage"])

@@ -81,15 +81,21 @@ def load_gamma_fatigue_state() -> dict:
 
 def save_gamma_fatigue_state(state: dict) -> None:
     """id=1 satirini PATCH ile guncelle (satir setup'ta bir kez INSERT edilmis olmali)."""
+    from datetime import datetime, timezone
     url = f"{os.environ['SUPABASE_URL']}/rest/v1/gamma_fatigue_state?id=eq.1"
     payload = json.dumps({
         "last_check_ms": state["last_check_ms"],
         "put_delta_history": state["put_delta_history"],
         "cvd_history": state["cvd_history"],
         "toxicity_belief": state["toxicity_belief"],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }).encode()
-    req = urllib.request.Request(url, data=payload, headers=_headers(), method="PATCH")
-    urllib.request.urlopen(req)
+    headers = {**_headers(), "Prefer": "return=minimal"}
+    req = urllib.request.Request(url, data=payload, headers=headers, method="PATCH")
+    try:
+        urllib.request.urlopen(req)
+    except Exception as e:
+        print(f"[GAMMA_FATIGUE] save_state HATA: {e}")
 
 
 def log_gamma_fatigue_observe(entry: dict) -> None:

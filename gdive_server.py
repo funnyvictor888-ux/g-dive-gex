@@ -1522,6 +1522,21 @@ def run_cron():
             )
             urllib.request.urlopen(log_req)
             print(f"[TALEB] Shadow log kaydedildi: signal={taleb_signal} pin={pin_score:.1f} amp={amplifier:.2f}")
+            # -- Regime Logger (observe-only, Hurst + ADF) --
+            try:
+                from regime_logger import log_regime
+                prices_raw = [float(x) for x in data.get("closes", [])[-100:]] if data.get("closes") else []
+                if not prices_raw:
+                    # Supabase snapshots tablosundan son 100 BTC kapanis fiyatini al
+                    import urllib.request, json, os as _os
+                    snap_url = f"{_os.environ['SUPABASE_URL']}/rest/v1/snapshots?order=timestamp.desc&limit=100&select=spot"
+                    snap_req = urllib.request.Request(snap_url, headers={"apikey": _os.environ["SUPABASE_KEY"], "Authorization": f"Bearer {_os.environ['SUPABASE_KEY']}"})
+                    snaps = json.loads(urllib.request.urlopen(snap_req).read())
+                    prices_raw = [float(s["spot"]) for s in reversed(snaps) if s.get("spot")]
+                if len(prices_raw) >= 20:
+                    log_regime(trigger_type="daily_snapshot", btc_price=data.get("spot", 0), prices=prices_raw)
+            except Exception as re:
+                print(f"[REGIME] daily_snapshot hatasi: {re}")
             # -- Gamma Fatigue (observe-only, henuz trade mantigina girmiyor) --
             try:
                 from gamma_fatigue_integration import run_gamma_fatigue_tick

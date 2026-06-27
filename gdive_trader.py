@@ -117,6 +117,8 @@ COST_CONFIG = {
     "slippage_rate": 0.0002,        # 0.02% per leg (likit BTC)
 }
 
+TRAIL_PCT = 0.03  # %3 trailing stop (karda tetiklenir, ileride ATR bazlı yapilacak)
+
 
 def _calc_realistic_pnl(entry, exit_price, size, direction, opened_date_str, leverage=1):
     """
@@ -475,7 +477,24 @@ def run_trader():
         if direction == "LONG":
             unreal = (price - entry) * size
             print(f"[TRADER] LONG #{trade_id} Entry:{entry:.0f} Stop:{stop:.0f} TP:{tp:.0f} Unrealized:${unreal:.0f}")
-            
+
+            # Trailing stop - peak guncelle
+            current_peak = t.get("peak_price") or entry
+            if price > current_peak:
+                current_peak = price
+                supa_patch(f"trades?trade_id=eq.{trade_id}", {"peak_price": current_peak})
+            trail_stop = current_peak * (1 - TRAIL_PCT)
+            if price <= trail_stop and current_peak > entry:
+                pnl, _cost = _calc_realistic_pnl(entry, price, size, "LONG", t.get("date",""), cfg["leverage"])
+                supa_patch(f"trades?trade_id=eq.{trade_id}", {
+                    "status":"CLOSED","exit_price":price,
+                    "exit_date":datetime.utcnow().isoformat(),
+                    "pnl":round(pnl,2),
+                    "notes":(t.get("notes","") + f" |TRAIL_STOP peak={current_peak:.0f} trail={trail_stop:.0f}")
+                })
+                print(f"[TRADER] TRAIL STOP LONG @${price:.0f} peak={current_peak:.0f} PnL:${pnl:.0f}")
+                continue
+
             # Zaman cikisi (trade suresi >= dte_exit gun, partial dahil, sadece karda)
             if trade_days_held >= cfg["dte_exit"]:
                 pnl, _cost = _calc_realistic_pnl(entry, price, size, "LONG", t.get("date",""), cfg["leverage"])
@@ -538,7 +557,24 @@ def run_trader():
         elif direction == "SHORT":
             unreal = (entry - price) * size
             print(f"[TRADER] SHORT #{trade_id} Entry:{entry:.0f} Stop:{stop:.0f} TP:{tp:.0f} Unrealized:${unreal:.0f}")
-            
+
+            # Trailing stop - trough guncelle
+            current_trough = t.get("trough_price") or entry
+            if price < current_trough:
+                current_trough = price
+                supa_patch(f"trades?trade_id=eq.{trade_id}", {"trough_price": current_trough})
+            trail_stop_short = current_trough * (1 + TRAIL_PCT)
+            if price >= trail_stop_short and current_trough < entry:
+                pnl, _cost = _calc_realistic_pnl(entry, price, size, "SHORT", t.get("date",""), cfg["leverage"])
+                supa_patch(f"trades?trade_id=eq.{trade_id}", {
+                    "status":"CLOSED","exit_price":price,
+                    "exit_date":datetime.utcnow().isoformat(),
+                    "pnl":round(pnl,2),
+                    "notes":(t.get("notes","") + f" |TRAIL_STOP trough={current_trough:.0f} trail={trail_stop_short:.0f}")
+                })
+                print(f"[TRADER] TRAIL STOP SHORT @${price:.0f} trough={current_trough:.0f} PnL:${pnl:.0f}")
+                continue
+
             # Zaman cikisi (trade suresi >= dte_exit gun, partial dahil, sadece karda)
             if trade_days_held >= cfg["dte_exit"]:
                 pnl, _cost = _calc_realistic_pnl(entry, price, size, "SHORT", t.get("date",""), cfg["leverage"])

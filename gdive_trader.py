@@ -215,7 +215,8 @@ def supa_patch(path, data):
             headers=h,
             method="PATCH"
         )
-        urllib.request.urlopen(req)
+        with urllib.request.urlopen(req) as r:
+            print(f"[PATCH] {path} status={r.status}")
         return True
     except Exception as e:
         print(f"[ERR] PATCH {path}: {e}")

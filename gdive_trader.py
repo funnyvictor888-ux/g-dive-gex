@@ -208,6 +208,7 @@ def supa_post(path, data):
 def supa_patch(path, data):
     try:
         h = dict(HEADERS)
+        h["Prefer"] = "return=minimal"
         req = urllib.request.Request(
             f"{SUPABASE_URL}/rest/v1/{path}",
             data=json.dumps(data).encode(),

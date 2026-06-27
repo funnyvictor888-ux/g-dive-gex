@@ -117,7 +117,61 @@ COST_CONFIG = {
     "slippage_rate": 0.0002,        # 0.02% per leg (likit BTC)
 }
 
-TRAIL_PCT = 0.03  # %3 trailing stop (karda tetiklenir, ileride ATR bazlı yapilacak)
+TRAIL_PCT = 0.03
+
+# ============ TRAILING SHADOW (1B) — log-only, gercek trade'i ETKILEMEZ ============
+SHADOW_TRAIL_PCT = 0.08
+
+def _record_trailing_shadow(t, real_exit, real_pnl, cfg):
+    """Bir trade TRAIL_STOP ile kapaninca shadow'a kaydet (hayalet olarak acik baslar)."""
+    try:
+        d = t.get("dir", "")
+        entry = t.get("entry", 0)
+        peak = t.get("peak_price") if d == "LONG" else t.get("trough_price")
+        peak = peak or real_exit
+        supa_post("trailing_shadow", {
+            "trade_id": str(t.get("trade_id","")),
+            "dir": d, "entry": entry, "size": t.get("size",0),
+            "leverage": cfg.get("leverage",2),
+            "real_exit_price": real_exit, "real_pnl": round(real_pnl,2), "real_peak": peak,
+            "shadow_trail_pct": SHADOW_TRAIL_PCT, "shadow_peak": peak,
+            "shadow_status": "OPEN", "opened_date": t.get("date","")
+        })
+        print(f"[SHADOW] kayit: {d} #{t.get('trade_id')} real_pnl=${real_pnl:.0f} peak={peak:.0f}")
+    except Exception as e:
+        print(f"[SHADOW] record hata (gercek trade etkilenmez): {e}")
+
+def run_trailing_shadow(price):
+    """Her turda acik shadow hayaletlerini %8 trailing ile takip et. Gercek trade'den AYRI."""
+    try:
+        ghosts = supa_get("trailing_shadow?shadow_status=eq.OPEN&select=*") or []
+        for g in ghosts:
+            d = g.get("dir",""); entry = g.get("entry",0); size = g.get("size",0)
+            lev = g.get("leverage",2); peak = g.get("shadow_peak") or entry
+            sid = g.get("id")
+            if d == "LONG":
+                if price > peak:
+                    peak = price; supa_patch(f"trailing_shadow?id=eq.{sid}", {"shadow_peak": peak})
+                trail = peak * (1 - SHADOW_TRAIL_PCT)
+                if price <= trail and peak > entry:
+                    pnl,_ = _calc_realistic_pnl(entry, price, size, "LONG", g.get("opened_date",""), lev)
+                    supa_patch(f"trailing_shadow?id=eq.{sid}", {"shadow_status":"CLOSED",
+                        "shadow_exit_price":price,"shadow_pnl":round(pnl,2),
+                        "shadow_exit_date":datetime.utcnow().isoformat(),"shadow_exit_reason":"SHADOW_TRAIL"})
+                    print(f"[SHADOW] LONG #{g.get('trade_id')} kapandi @{price:.0f} shadow_pnl=${pnl:.0f} (real={g.get('real_pnl')})")
+            else:  # SHORT
+                if price < peak:
+                    peak = price; supa_patch(f"trailing_shadow?id=eq.{sid}", {"shadow_peak": peak})
+                trail = peak * (1 + SHADOW_TRAIL_PCT)
+                if price >= trail and peak < entry:
+                    pnl,_ = _calc_realistic_pnl(entry, price, size, "SHORT", g.get("opened_date",""), lev)
+                    supa_patch(f"trailing_shadow?id=eq.{sid}", {"shadow_status":"CLOSED",
+                        "shadow_exit_price":price,"shadow_pnl":round(pnl,2),
+                        "shadow_exit_date":datetime.utcnow().isoformat(),"shadow_exit_reason":"SHADOW_TRAIL"})
+                    print(f"[SHADOW] SHORT #{g.get('trade_id')} kapandi @{price:.0f} shadow_pnl=${pnl:.0f} (real={g.get('real_pnl')})")
+    except Exception as e:
+        print(f"[SHADOW] run hata (gercek trade etkilenmez): {e}")
+  # %3 trailing stop (karda tetiklenir, ileride ATR bazlı yapilacak)
 
 
 def _calc_realistic_pnl(entry, exit_price, size, direction, opened_date_str, leverage=1):
@@ -394,6 +448,10 @@ def run_trader():
     price = get_btc_price() or spot
     print(f"[TRADER] Spot:{price:.0f} Regime:{regime} Gamma:{gamma} GEX:{gex:.0f}M")
 
+    # Trailing shadow (1B) — gercek trade'den ONCE, log-only
+    try: run_trailing_shadow(price)
+    except Exception as _e: print(f"[SHADOW] cagri hata: {_e}")
+
     # 4H teknik analiz
     candles = get_binance_ohlcv("4h", 250)
     if len(candles) < 50:
@@ -494,6 +552,8 @@ def run_trader():
                     "notes":(t.get("notes","") + f" |TRAIL_STOP peak={current_peak:.0f} trail={trail_stop:.0f}")
                 })
                 print(f"[TRADER] TRAIL STOP LONG @${price:.0f} peak={current_peak:.0f} PnL:${pnl:.0f}")
+                try: _record_trailing_shadow(t, price, pnl, cfg)
+                except Exception: pass
                 continue
 
             # Zaman cikisi (trade suresi >= dte_exit gun, partial dahil, sadece karda)
@@ -574,6 +634,8 @@ def run_trader():
                     "notes":(t.get("notes","") + f" |TRAIL_STOP trough={current_trough:.0f} trail={trail_stop_short:.0f}")
                 })
                 print(f"[TRADER] TRAIL STOP SHORT @${price:.0f} trough={current_trough:.0f} PnL:${pnl:.0f}")
+                try: _record_trailing_shadow(t, price, pnl, cfg)
+                except Exception: pass
                 continue
 
             # Zaman cikisi (trade suresi >= dte_exit gun, partial dahil, sadece karda)

@@ -121,6 +121,7 @@ TRAIL_PCT = 0.03
 
 # ============ TRAILING SHADOW (1B) — log-only, gercek trade'i ETKILEMEZ ============
 SHADOW_TRAIL_PCT = 0.08
+SHADOW_TRAIL_PCTS = [0.06, 0.08, 0.10]  # uc deger test
 
 def _record_trailing_shadow(t, real_exit, real_pnl, cfg):
     """Bir trade TRAIL_STOP ile kapaninca shadow'a kaydet (hayalet olarak acik baslar)."""
@@ -129,15 +130,16 @@ def _record_trailing_shadow(t, real_exit, real_pnl, cfg):
         entry = t.get("entry", 0)
         peak = t.get("peak_price") if d == "LONG" else t.get("trough_price")
         peak = peak or real_exit
-        supa_post("trailing_shadow", {
-            "trade_id": str(t.get("trade_id","")),
-            "dir": d, "entry": entry, "size": t.get("size",0),
-            "leverage": cfg.get("leverage",2),
-            "real_exit_price": real_exit, "real_pnl": round(real_pnl,2), "real_peak": peak,
-            "shadow_trail_pct": SHADOW_TRAIL_PCT, "shadow_peak": peak,
-            "shadow_status": "OPEN", "opened_date": t.get("date","")
-        })
-        print(f"[SHADOW] kayit: {d} #{t.get('trade_id')} real_pnl=${real_pnl:.0f} peak={peak:.0f}")
+        for _pct in SHADOW_TRAIL_PCTS:
+            supa_post("trailing_shadow", {
+                "trade_id": str(t.get("trade_id","")),
+                "dir": d, "entry": entry, "size": t.get("size",0),
+                "leverage": cfg.get("leverage",2),
+                "real_exit_price": real_exit, "real_pnl": round(real_pnl,2), "real_peak": peak,
+                "shadow_trail_pct": _pct, "shadow_peak": peak,
+                "shadow_status": "OPEN", "opened_date": t.get("date","")
+            })
+        print(f"[SHADOW] kayit: {d} #{t.get('trade_id')} real_pnl=${real_pnl:.0f} peak={peak:.0f} (3 pct: 6/8/10)")
     except Exception as e:
         print(f"[SHADOW] record hata (gercek trade etkilenmez): {e}")
 
@@ -152,7 +154,7 @@ def run_trailing_shadow(price):
             if d == "LONG":
                 if price > peak:
                     peak = price; supa_patch(f"trailing_shadow?id=eq.{sid}", {"shadow_peak": peak})
-                trail = peak * (1 - SHADOW_TRAIL_PCT)
+                trail = peak * (1 - (g.get("shadow_trail_pct") or 0.08))
                 if price <= trail and peak > entry:
                     pnl,_ = _calc_realistic_pnl(entry, price, size, "LONG", g.get("opened_date",""), lev)
                     supa_patch(f"trailing_shadow?id=eq.{sid}", {"shadow_status":"CLOSED",
@@ -162,7 +164,7 @@ def run_trailing_shadow(price):
             else:  # SHORT
                 if price < peak:
                     peak = price; supa_patch(f"trailing_shadow?id=eq.{sid}", {"shadow_peak": peak})
-                trail = peak * (1 + SHADOW_TRAIL_PCT)
+                trail = peak * (1 + (g.get("shadow_trail_pct") or 0.08))
                 if price >= trail and peak < entry:
                     pnl,_ = _calc_realistic_pnl(entry, price, size, "SHORT", g.get("opened_date",""), lev)
                     supa_patch(f"trailing_shadow?id=eq.{sid}", {"shadow_status":"CLOSED",

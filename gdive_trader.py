@@ -105,26 +105,20 @@ STRATEGIES = {
     }
 }
 
-# Aktif strateji — env'den al, yoksa C1
 ACTIVE_STRATEGY = os.environ.get("GDIVE_STRATEGY", "C1")
 
-# ── REALİSTİK PnL HELPER ─────────────────────────────────────────
-# Gross paper PnL'yi gerçek dünya maliyetleriyle indirir.
-# Oranlar konservatif tahmin — Deribit BTC-PERPETUAL standardı.
 COST_CONFIG = {
-    "taker_fee_rate": 0.0005,       # 0.05% per leg (Deribit taker)
-    "funding_rate_daily": 0.00027,  # ~10% yıllık / 365
-    "slippage_rate": 0.0002,        # 0.02% per leg (likit BTC)
+    "taker_fee_rate": 0.0005,
+    "funding_rate_daily": 0.00027,
+    "slippage_rate": 0.0002,
 }
 
 TRAIL_PCT = 0.03
 
-# ============ TRAILING SHADOW (1B) — log-only, gercek trade'i ETKILEMEZ ============
 SHADOW_TRAIL_PCT = 0.08
-SHADOW_TRAIL_PCTS = [0.06, 0.08, 0.10]  # uc deger test
+SHADOW_TRAIL_PCTS = [0.06, 0.08, 0.10]
 
 def _record_trailing_shadow(t, real_exit, real_pnl, cfg):
-    """Bir trade TRAIL_STOP ile kapaninca shadow'a kaydet (hayalet olarak acik baslar)."""
     try:
         d = t.get("dir", "")
         entry = t.get("entry", 0)
@@ -144,7 +138,6 @@ def _record_trailing_shadow(t, real_exit, real_pnl, cfg):
         print(f"[SHADOW] record hata (gercek trade etkilenmez): {e}")
 
 def run_trailing_shadow(price):
-    """Her turda acik shadow hayaletlerini %8 trailing ile takip et. Gercek trade'den AYRI."""
     try:
         ghosts = supa_get("trailing_shadow?shadow_status=eq.OPEN&select=*") or []
         for g in ghosts:
@@ -161,7 +154,7 @@ def run_trailing_shadow(price):
                         "shadow_exit_price":price,"shadow_pnl":round(pnl,2),
                         "shadow_exit_date":datetime.utcnow().isoformat(),"shadow_exit_reason":"SHADOW_TRAIL"})
                     print(f"[SHADOW] LONG #{g.get('trade_id')} kapandi @{price:.0f} shadow_pnl=${pnl:.0f} (real={g.get('real_pnl')})")
-            else:  # SHORT
+            else:
                 if price < peak:
                     peak = price; supa_patch(f"trailing_shadow?id=eq.{sid}", {"shadow_peak": peak})
                 trail = peak * (1 + (g.get("shadow_trail_pct") or 0.08))
@@ -173,33 +166,22 @@ def run_trailing_shadow(price):
                     print(f"[SHADOW] SHORT #{g.get('trade_id')} kapandi @{price:.0f} shadow_pnl=${pnl:.0f} (real={g.get('real_pnl')})")
     except Exception as e:
         print(f"[SHADOW] run hata (gercek trade etkilenmez): {e}")
-  # %3 trailing stop (karda tetiklenir, ileride ATR bazlı yapilacak)
 
 
 def _calc_realistic_pnl(entry, exit_price, size, direction, opened_date_str, leverage=1):
-    """
-    Gross PnL hesabını yapıp maliyetleri düşer.
-    Returns: (net_pnl_rounded, cost_breakdown_dict)
-
-    direction: "LONG" or "SHORT"
-    opened_date_str: "YYYY-MM-DD HH:MM" formatı
-    """
     if direction == "LONG":
         gross_pnl = (exit_price - entry) * size * leverage
     else:
         gross_pnl = (entry - exit_price) * size * leverage
 
-    # Notional değerler (fee/slippage için)
     notional_in = entry * size
     notional_out = exit_price * size
 
-    # Maliyetler
     fee_in = notional_in * COST_CONFIG["taker_fee_rate"]
     fee_out = notional_out * COST_CONFIG["taker_fee_rate"]
     slip_in = notional_in * COST_CONFIG["slippage_rate"]
     slip_out = notional_out * COST_CONFIG["slippage_rate"]
 
-    # Funding — tutma süresi
     days_held = 0.0
     try:
         from datetime import datetime as _dt
@@ -207,7 +189,7 @@ def _calc_realistic_pnl(entry, exit_price, size, direction, opened_date_str, lev
         elapsed = (_dt.utcnow() - opened_dt).total_seconds() / 86400.0
         days_held = max(elapsed, 0.0)
     except Exception:
-        days_held = 0.5  # fallback varsayım
+        days_held = 0.5
 
     avg_notional = (notional_in + notional_out) / 2.0
     funding = avg_notional * COST_CONFIG["funding_rate_daily"] * days_held
@@ -228,7 +210,6 @@ def _calc_realistic_pnl(entry, exit_price, size, direction, opened_date_str, lev
 
 
 def _trade_opened_date(open_trades, trade_id):
-    """Açık trade listesinden trade'in date alanını çek."""
     for t in open_trades:
         if str(t.get("trade_id")) == str(trade_id):
             return t.get("date", "")
@@ -288,13 +269,9 @@ def get_btc_price():
         return None
 
 def _deribit_4h_ohlcv(limit=250):
-    """Deribit BTC-PERPETUAL 1H verisini 4H'a aggregate ederek OHLC döndür.
-    Format: Binance ile uyumlu list of {"o","h","l","c"}.
-    GitHub Actions runner'lardan Binance kısıtlı olduğunda fallback."""
     try:
         import time as _t
         now = int(_t.time() * 1000)
-        # Her 4H bar = 4 x 1H, ekstra buffer için 5x al
         hours = limit * 4 + 10
         start = now - hours * 3600 * 1000
         url = (f"https://www.deribit.com/api/v2/public/get_tradingview_chart_data"
@@ -312,8 +289,6 @@ def _deribit_4h_ohlcv(limit=250):
         if not ticks or len(ticks) != len(closes):
             return []
 
-        # 4H slot bazlı OHLC aggregation
-        # slot = (timestamp_ms // (4 * 3600 * 1000)) * (4 * 3600 * 1000)
         from collections import OrderedDict
         slots = OrderedDict()
         for ts_ms, o, h, l, c in zip(ticks, opens, highs, lows, closes):
@@ -321,11 +296,10 @@ def _deribit_4h_ohlcv(limit=250):
             if slot not in slots:
                 slots[slot] = {"o": o, "h": h, "l": l, "c": c}
             else:
-                # high = max, low = min, close = son (kronolojik sırada)
                 bar = slots[slot]
                 bar["h"] = max(bar["h"], h)
                 bar["l"] = min(bar["l"], l)
-                bar["c"] = c  # son 1H bar'ın close'u
+                bar["c"] = c
 
         bars = list(slots.values())
         return bars[-limit:] if len(bars) > limit else bars
@@ -335,7 +309,6 @@ def _deribit_4h_ohlcv(limit=250):
 
 
 def get_binance_ohlcv(interval="4h", limit=250):
-    """Önce Binance dener. Boş dönerse (GitHub runner'larda sık olur) Deribit'e fallback."""
     try:
         url = f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval={interval}&limit={limit}"
         req = urllib.request.Request(url)
@@ -347,7 +320,6 @@ def get_binance_ohlcv(interval="4h", limit=250):
     except Exception as e:
         print(f"[TRADER] Binance fail: {e}")
 
-    # Fallback: Deribit (sadece 4h destekli, başka interval gelirse uyar)
     if interval != "4h":
         print(f"[TRADER] Deribit fallback sadece 4h destekliyor, istenen: {interval}")
         return []
@@ -379,8 +351,43 @@ def rsi(prices, period=14):
         result.append(100-100/(1+rs))
     return result
 
+
+# ============ MOMENTUM Q-SCORE (OBSERVE-ONLY, Menthor Q tarzi 0-5 normalize) ============
+# Sinyali ETKILEMEZ. Sadece alignment_log'a yazilir, veri birikince (20-30 ornek)
+# decide.py / funding veto entegrasyonu sonrasi filtre kararina kalibrasyon icin kullanilacak.
+def momentum_score(e9_v, e21_v, e50_v, rsi_v, price, atr_v, direction="bull"):
+    """
+    0-5 normalize momentum guc skoru.
+    Bilesenler:
+      1) EMA spread gucu (e9-e21)/ATR -> trend ivmesi      (0-1.67)
+      2) RSI 50'den uzaklik, yon-bilincli                   (0-1.67)
+      3) Fiyat-e50 mesafesi /ATR -> trend genisligi          (0-1.67)
+    direction: "bull" veya "bear" — hangi yon icin skorlandigini belirler.
+    """
+    if atr_v <= 0:
+        return 0.0
+
+    ema_spread = (e9_v - e21_v) / atr_v
+    if direction == "bear":
+        ema_spread = -ema_spread
+    c1 = max(0.0, min(1.67, (ema_spread / 2.0) * 1.67))
+
+    if direction == "bull":
+        rsi_dev = max(0.0, rsi_v - 50) / 50.0
+    else:
+        rsi_dev = max(0.0, 50 - rsi_v) / 50.0
+    c2 = max(0.0, min(1.67, rsi_dev * 1.67 * 2))
+
+    dist = (price - e50_v) / atr_v
+    if direction == "bear":
+        dist = -dist
+    c3 = max(0.0, min(1.67, (dist / 3.0) * 1.67))
+
+    score = round(c1 + c2 + c3, 2)
+    return min(5.0, score)
+
+
 def get_equity_curve_mult(trades_closed, cfg):
-    """EqCurve: son kapalı trade'lerin EMA'sı pozitifse tam boyut"""
     if len(trades_closed) < cfg["eq_ema_period"]:
         return 1.0
     recent_pnls = [t.get("pnl",0) for t in trades_closed[-cfg["eq_ema_period"]*2:]]
@@ -395,7 +402,7 @@ def _log_alignment(snapshot_ts=None, spot=None, rsi=None, e9=None, e21=None,
                    e50=None, e200=None, atr=None, bull_tech=None, bear_tech=None,
                    gex=None, hvl=None, flip_near=None, regime=None,
                    pyramid_decision=None, long_signal=None, short_signal=None,
-                   trade_opened=False, block_reason=None):
+                   trade_opened=False, block_reason=None, momentum_score=None):
     try:
         from datetime import datetime as _dt
         row = {"timestamp": _dt.utcnow().isoformat(), "snapshot_ts": snapshot_ts,
@@ -404,15 +411,14 @@ def _log_alignment(snapshot_ts=None, spot=None, rsi=None, e9=None, e21=None,
                "gex": gex, "hvl": hvl, "flip_near": flip_near, "regime": regime,
                "pyramid_decision": pyramid_decision, "long_signal": long_signal,
                "short_signal": short_signal, "trade_opened": trade_opened,
-               "block_reason": block_reason}
+               "block_reason": block_reason, "momentum_score": momentum_score}
         supa_post("alignment_log", row)
-        print(f"[ALIGN_LOG] {block_reason} bull={bull_tech} bear={bear_tech} long={long_signal} short={short_signal}")
+        print(f"[ALIGN_LOG] {block_reason} bull={bull_tech} bear={bear_tech} long={long_signal} short={short_signal} mom={momentum_score}")
     except Exception as _e:
         print(f"[ALIGN_LOG ERR] {_e}")
 
 
 def _trade_age_days(date_str):
-    """Trade acilis tarihinden (\"YYYY-MM-DD HH:MM\") bugune kadar GUN sayisi."""
     try:
         from datetime import datetime as _dt
         opened = _dt.strptime(date_str.strip()[:16], "%Y-%m-%d %H:%M")
@@ -426,7 +432,6 @@ def run_trader():
     print(f"[TRADER] {datetime.utcnow().isoformat()} — Strateji: {cfg['name']}")
     print(f"[TRADER] {cfg['description']}")
 
-    # Son snapshot al
     rows = supa_get("snapshots?order=id.desc&limit=1")
     if not rows:
         print("[TRADER] Snapshot yok"); return
@@ -446,15 +451,14 @@ def run_trader():
     layer = d.get("layer_budget") or {}
     flip_info = d.get("gamma_analysis") or {}
 
-    # Canlı fiyat
     price = get_btc_price() or spot
     print(f"[TRADER] Spot:{price:.0f} Regime:{regime} Gamma:{gamma} GEX:{gex:.0f}M")
 
-    # Trailing shadow (1B) — gercek trade'den ONCE, log-only
     try: run_trailing_shadow(price)
     except Exception as _e: print(f"[SHADOW] cagri hata: {_e}")
 
-    # 4H teknik analiz
+    mom_score = None  # default, asagida hesaplanirsa doldurulur
+
     candles = get_binance_ohlcv("4h", 250)
     if len(candles) < 50:
         print("[TRADER] Binance erisilemedi, snapshot teknik kullaniliyor")
@@ -467,6 +471,7 @@ def run_trader():
         long_signal = bull_tech and price > hvl
         short_signal = bear_tech and price < hvl
         print(f"[TRADER] Snapshot sinyal: bull={bull_tech} bear={bear_tech} long={long_signal} short={short_signal}")
+        # snapshot fallback'te ATR/EMA placeholder degerler oldugundan mom_score None birakilir.
     elif len(candles) >= 50:
         closes = [c["c"] for c in candles]
         e9 = ema(closes, 9)
@@ -480,7 +485,6 @@ def run_trader():
         rsi_v = rsis[n-1] if rsis[n-1] else 50
         atr_v = atrs_arr[n]
         
-        # Teknik sinyaller
         e200_long = price > e200[n] if cfg["trend_confirm_e200"] else True
         e200_short = price < e200[n] if cfg["trend_confirm_e200"] else True
         
@@ -493,38 +497,38 @@ def run_trader():
         
         print(f"[TRADER] Tech: RSI={rsi_v:.1f} E9={e9[n]:.0f} E21={e21[n]:.0f} E200={e200[n]:.0f} ATR={atr_v:.0f}")
         print(f"[TRADER] bull_tech={bull_tech} bear_tech={bear_tech}")
+
+        # Momentum Q-Score (observe-only)
+        mom_direction = "bull" if e9[n] > e21[n] else "bear"
+        mom_score = momentum_score(e9[n], e21[n], e50[n], rsi_v, price, atr_v, direction=mom_direction)
+        print(f"[TRADER] Momentum Q-Score (observe-only, {mom_direction}): {mom_score}/5.0")
     else:
         _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, gex=gex, hvl=hvl, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="tech_insufficient")
         print("[TRADER] Teknik veri yetersiz"); return
 
-    # Açık trade'leri al
     open_trades = supa_get("trades?status=eq.OPEN")
     closed_trades = supa_get("trades?status=eq.CLOSED&order=id.desc&limit=50")
     print(f"[TRADER] Açık: {len(open_trades)} | Kapalı son50: {len(closed_trades)}")
     if check_halt_status():
-        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="manual_halt")
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="manual_halt", momentum_score=mom_score)
         print("[TRADER] MANUAL HALT aktif"); return
     ok, violations = check_invariants(open_trades, closed_trades, price)
     if not ok:
-        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="invariant")
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="invariant", momentum_score=mom_score)
         print(f"[TRADER] INVARIANT: {violations}"); log_halt("AUTO", violations); return
     print("[TRADER] Invariants OK")
 
-    # Filtreler
     flip_near = flip_info.get("flip_near", False) or abs(price-hvl)/price*100 < 0.5
     expiry_day = expiry.get("expiry_day", False)
     days_to_exp = expiry.get("days_to_expiry", 30)
     iv_crush = term_shape == "BACKWARDATION" and iv_rank > cfg["iv_crush_threshold"]
     
-    # EqCurve multiplier
     ec_mult = get_equity_curve_mult(closed_trades, cfg)
 
-    # Risk hesapla
     CAPITAL = 10000
     risk = CAPITAL * cfg["base_risk"] * ec_mult
     expiry_scalar = 0.5 if expiry.get("expiry_week") else 1.0
 
-    # Açık trade yönetimi
     for t in open_trades:
         entry = t.get("entry", 0)
         stop = t.get("stop", 0)
@@ -539,7 +543,6 @@ def run_trader():
             unreal = (price - entry) * size
             print(f"[TRADER] LONG #{trade_id} Entry:{entry:.0f} Stop:{stop:.0f} TP:{tp:.0f} Unrealized:${unreal:.0f}")
 
-            # Trailing stop - peak guncelle
             current_peak = t.get("peak_price") or entry
             if price > current_peak:
                 current_peak = price
@@ -558,7 +561,6 @@ def run_trader():
                 except Exception: pass
                 continue
 
-            # Zaman cikisi (trade suresi >= dte_exit gun, partial dahil, sadece karda)
             if trade_days_held >= cfg["dte_exit"]:
                 pnl, _cost = _calc_realistic_pnl(entry, price, size, "LONG", t.get("date",""), cfg["leverage"])
                 if pnl > 0:
@@ -571,7 +573,6 @@ def run_trader():
                     print(f"[TRADER] TIME EXIT LONG @${price:.0f} held={trade_days_held:.1f}d PnL:${pnl:.0f}")
                     continue
             
-            # 1/3 TP exit
             if not partial_closed and tp > entry:
                 t1 = entry + (tp - entry) * cfg["third_tp"]
                 if price >= t1:
@@ -584,7 +585,6 @@ def run_trader():
                     print(f"[TRADER] FRAC TP LONG @${price:.0f} %50 kapat, yeni TP:${next_wall:.0f}")
                     continue
             
-            # Stop
             if price <= stop:
                 pnl, _cost = _calc_realistic_pnl(entry, stop, size, "LONG", t.get("date",""), cfg["leverage"])
                 supa_patch(f"trades?trade_id=eq.{trade_id}", {
@@ -595,7 +595,6 @@ def run_trader():
                 })
                 print(f"[TRADER] STOP LONG @${stop:.0f} PnL:${pnl:.0f}")
             
-            # TP
             elif price >= tp:
                 pnl, _cost = _calc_realistic_pnl(entry, tp, size, "LONG", t.get("date",""), cfg["leverage"])
                 supa_patch(f"trades?trade_id=eq.{trade_id}", {
@@ -606,7 +605,6 @@ def run_trader():
                 })
                 print(f"[TRADER] TP LONG @${tp:.0f} PnL:${pnl:.0f}")
             
-            # Rejim tersine döndü
             elif bear_tech and not bull_tech:
                 pnl, _cost = _calc_realistic_pnl(entry, price, size, "LONG", t.get("date",""), cfg["leverage"])
                 supa_patch(f"trades?trade_id=eq.{trade_id}", {
@@ -621,7 +619,6 @@ def run_trader():
             unreal = (entry - price) * size
             print(f"[TRADER] SHORT #{trade_id} Entry:{entry:.0f} Stop:{stop:.0f} TP:{tp:.0f} Unrealized:${unreal:.0f}")
 
-            # Trailing stop - trough guncelle
             current_trough = t.get("trough_price") or entry
             if price < current_trough:
                 current_trough = price
@@ -640,7 +637,6 @@ def run_trader():
                 except Exception: pass
                 continue
 
-            # Zaman cikisi (trade suresi >= dte_exit gun, partial dahil, sadece karda)
             if trade_days_held >= cfg["dte_exit"]:
                 pnl, _cost = _calc_realistic_pnl(entry, price, size, "SHORT", t.get("date",""), cfg["leverage"])
                 if pnl > 0:
@@ -653,7 +649,6 @@ def run_trader():
                     print(f"[TRADER] TIME EXIT SHORT @${price:.0f} held={trade_days_held:.1f}d PnL:${pnl:.0f}")
                     continue
             
-            # 1/3 TP exit
             if not partial_closed and entry > tp:
                 t1 = entry - (entry - tp) * cfg["third_tp"]
                 if price <= t1:
@@ -666,7 +661,6 @@ def run_trader():
                     print(f"[TRADER] FRAC TP SHORT @${price:.0f}")
                     continue
             
-            # Stop
             if price >= stop:
                 pnl, _cost = _calc_realistic_pnl(entry, stop, size, "SHORT", t.get("date",""), cfg["leverage"])
                 supa_patch(f"trades?trade_id=eq.{trade_id}", {
@@ -697,22 +691,20 @@ def run_trader():
                 })
                 print(f"[TRADER] REGIME EXIT SHORT @${price:.0f} PnL:${pnl:.0f}")
 
-    # Yeni trade aç
     if open_trades:
-        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="open_trade")
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="open_trade", momentum_score=mom_score)
         print("[TRADER] Açık trade var — yeni açılmıyor"); return
     
     if flip_near:
-        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="flip_near")
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="flip_near", momentum_score=mom_score)
         print(f"[TRADER] Flip yakın — bekle"); return
     if expiry_day:
-        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="expiry_day")
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="expiry_day", momentum_score=mom_score)
         print("[TRADER] Expiry günü — bekle"); return
     if iv_crush:
-        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="iv_crush")
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="iv_crush", momentum_score=mom_score)
         print(f"[TRADER] IV Crush ({term_shape}, IV:{iv_rank:.0f}%) — bekle"); return
 
-    # Sinyal
     long_signal  = bull_tech and e9[n]>e21[n] and price>hvl and gex>0
     short_signal = bear_tech and e9[n]<e21[n] and price<hvl and gex<0
 
@@ -737,7 +729,7 @@ def run_trader():
         }
         supa_post("trades", tr)
         print(f"[TRADER] ✅ LONG @${e:.0f} Stop:${sp:.0f} TP:${tp2:.0f} Size:{sz} RR:{rr}")
-        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), long_signal=long_signal, short_signal=short_signal, trade_opened=True, block_reason="opened_long")
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), long_signal=long_signal, short_signal=short_signal, trade_opened=True, block_reason="opened_long", momentum_score=mom_score)
 
     elif short_signal:
         e = price
@@ -758,11 +750,11 @@ def run_trader():
         }
         supa_post("trades", tr)
         print(f"[TRADER] ✅ SHORT @${e:.0f} Stop:${sp:.0f} TP:${tp2:.0f} Size:{sz} RR:{rr}")
-        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), long_signal=long_signal, short_signal=short_signal, trade_opened=True, block_reason="opened_short")
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), long_signal=long_signal, short_signal=short_signal, trade_opened=True, block_reason="opened_short", momentum_score=mom_score)
     
     else:
         print(f"[TRADER] Sinyal yok — BEKLE")
-        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), long_signal=long_signal, short_signal=short_signal, trade_opened=False, block_reason="no_signal")
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), long_signal=long_signal, short_signal=short_signal, trade_opened=False, block_reason="no_signal", momentum_score=mom_score)
 
     print("[TRADER] Tamamlandı")
 

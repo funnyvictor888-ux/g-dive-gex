@@ -168,6 +168,42 @@ def run_trailing_shadow(price):
         print(f"[SHADOW] run hata (gercek trade etkilenmez): {e}")
 
 
+def _record_flip_shadow(entry, stop, tp, size, atr_v, flip_dist_pct, gex, gex_z, lev):
+    """flip_near LONG'u bloke ettiginde ghost long kaydet. Ayni tick'te acik ghost varsa duplike acma."""
+    try:
+        openg = supa_get("flip_shadow?status=eq.OPEN&select=id") or []
+        if openg:
+            return  # zaten acik ghost var, tek seferde bir ghost izle (duplike onleme)
+        supa_post("flip_shadow", {
+            "entry": round(entry,2), "stop": round(stop,2), "tp": round(tp,2),
+            "size": size, "atr": round(atr_v,2), "flip_dist_pct": round(flip_dist_pct,4),
+            "gex": gex, "gex_z": gex_z, "status": "OPEN"
+        })
+        print(f"[FLIP_SHADOW] ghost LONG kaydi entry={entry:.0f} stop={stop:.0f} tp={tp:.0f} (flip_near bloke etti)")
+    except Exception as e:
+        print(f"[FLIP_SHADOW] record hata (gercek trade etkilenmez): {e}")
+
+def run_flip_shadow(price, lev=2):
+    """Acik flip ghost'lari izle: price stop veya tp'ye degince kapat + PnL yaz."""
+    try:
+        ghosts = supa_get("flip_shadow?status=eq.OPEN&select=*") or []
+        for g in ghosts:
+            entry = g.get("entry",0); stop = g.get("stop",0); tp = g.get("tp",0)
+            size = g.get("size",0); gid = g.get("id")
+            exit_p = None; reason = None
+            if price <= stop:
+                exit_p = stop; reason = "SHADOW_STOP"
+            elif price >= tp:
+                exit_p = tp; reason = "SHADOW_TP"
+            if exit_p is not None:
+                pnl,_ = _calc_realistic_pnl(entry, exit_p, size, "LONG", g.get("opened_at",""), lev)
+                supa_patch(f"flip_shadow?id=eq.{gid}", {
+                    "status":"CLOSED","exit_price":exit_p,"pnl":round(pnl,2),
+                    "exit_at":datetime.utcnow().isoformat(),"exit_reason":reason})
+                print(f"[FLIP_SHADOW] ghost #{gid} kapandi @{exit_p:.0f} {reason} pnl=${pnl:.0f}")
+    except Exception as e:
+        print(f"[FLIP_SHADOW] run hata (gercek trade etkilenmez): {e}")
+
 def _calc_realistic_pnl(entry, exit_price, size, direction, opened_date_str, leverage=1):
     if direction == "LONG":
         gross_pnl = (exit_price - entry) * size * leverage
@@ -602,6 +638,8 @@ def run_trader():
 
     try: run_trailing_shadow(price)
     except Exception as _e: print(f"[SHADOW] cagri hata: {_e}")
+    try: run_flip_shadow(price)
+    except Exception as _e: print(f"[FLIP_SHADOW] cagri hata: {_e}")
 
     mom_score = None  # default, asagida hesaplanirsa doldurulur
 
@@ -843,6 +881,17 @@ def run_trader():
     
     if flip_near:
         _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="flip_near", momentum_score=mom_score, funding_rate=funding_rate, funding_z=funding_z, pyramid_total=pyramid_total, pyramid_agreement=("pyr_%s_c4_blocked" % _pyr_dir if _pyr_dir!="neutral" else "neutral"), gex_z=gex_z)
+        # FLIP SHADOW (observe-only): flip_near olmasa LONG kosulu olusur muydu? Olusuyorsa ghost long ac.
+        try:
+            _flip_would_long = bull_tech and e9[n]>e21[n] and price>hvl and gex>0
+            if _flip_would_long:
+                _sm = cfg["atr_stop_mult"]; _tm = cfg["atr_tp_mult"]
+                _sp = price - atr_v*_sm; _tp = price + atr_v*_tm
+                _sz = round((risk * expiry_scalar) / (atr_v*_sm), 4)
+                _fdist = abs(price-hvl)/price*100
+                _record_flip_shadow(price, _sp, _tp, _sz, atr_v, _fdist, gex, gex_z, cfg.get("leverage",2))
+        except Exception as _fe:
+            print(f"[FLIP_SHADOW] gate hata (gercek trade etkilenmez): {_fe}")
         print(f"[TRADER] Flip yakın — bekle"); return
     if expiry_day:
         _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="expiry_day", momentum_score=mom_score, funding_rate=funding_rate, funding_z=funding_z, pyramid_total=pyramid_total, pyramid_agreement=("pyr_%s_c4_blocked" % _pyr_dir if _pyr_dir!="neutral" else "neutral"), gex_z=gex_z)

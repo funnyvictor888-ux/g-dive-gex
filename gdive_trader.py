@@ -316,6 +316,54 @@ def _deribit_4h_ohlcv(limit=250):
 FUNDING_VETO_STD = 1.5
 FUNDING_LOOKBACK = 48
 
+
+# ============ GEX_Z (observe-only, C4 gex standardizasyonu) ============
+# Ham total_net_gex non-stationary (%67 pozitif, drift'li). Rolling 4H z-score
+# rejim-goreli sinyal verir (%58 pozitif, simetrik). Olcum: 421 4H bar, z aralik +-4.5.
+# OBSERVE-ONLY: canli hala gex>0/gex<0 kullanir, gex_z sadece loglanir. Esik karari veri birikince.
+GEX_Z_WINDOW = 30   # 30 4H bar = 5 gun rolling pencere
+
+def compute_gex_z():
+    """Snapshots'tan 4H-bucket gex serisi kurup son bar'in rolling z-score'unu doner.
+    Doner: (gex_z, n_bars) veya (None, 0)."""
+    try:
+        from datetime import datetime as _dt
+        # Paginate: Supabase default max 1000/istek. 30 4H bar icin ~6 gun lazim.
+        # id.desc ile en yeniden basla, 6 sayfa (~6000 snapshot ~ 6-8 gun) cek.
+        rows = []
+        for _pg in range(6):
+            batch = supa_get("snapshots?select=timestamp,total_net_gex&order=id.desc&limit=1000&offset=%d" % (_pg*1000))
+            if not batch:
+                break
+            rows += batch
+            if len(batch) < 1000:
+                break
+        if not rows:
+            return None, 0
+        rows = [r for r in rows if r.get("total_net_gex") is not None]
+        rows.reverse()  # eskiden yeniye (id.desc cektik, ters cevir)
+        # 4H bucket, her dilimin SON degeri = bar kapanisi
+        buckets = {}
+        for r in rows:
+            ts = _dt.fromisoformat(r["timestamp"].replace("Z",""))
+            key = ts.strftime("%Y-%m-%d ") + str(ts.hour//4*4).zfill(2)
+            buckets[key] = r["total_net_gex"]
+        keys = sorted(buckets.keys())
+        gex4h = [buckets[k] for k in keys]
+        if len(gex4h) < GEX_Z_WINDOW + 1:
+            return None, len(gex4h)
+        win = gex4h[-GEX_Z_WINDOW-1:-1]  # son bar HARIC onceki W bar
+        cur = gex4h[-1]
+        m = sum(win)/len(win)
+        var = sum((x-m)**2 for x in win)/len(win)
+        sd = var**0.5
+        z = (cur - m)/(sd + 1e-9)
+        return z, len(gex4h)
+    except Exception as _e:
+        print("[GEX_Z] hata: %s" % _e)
+        return None, 0
+# ======================================================================
+
 def fetch_funding_series(hours=384):
     try:
         url = ("https://www.deribit.com/api/v2/public/get_funding_chart_data"
@@ -435,7 +483,7 @@ def _log_alignment(snapshot_ts=None, spot=None, rsi=None, e9=None, e21=None,
                    pyramid_decision=None, long_signal=None, short_signal=None,
                    trade_opened=False, block_reason=None, momentum_score=None,
                    funding_rate=None, funding_z=None, funding_veto=None,
-                   pyramid_total=None, pyramid_agreement=None):
+                   pyramid_total=None, pyramid_agreement=None, gex_z=None):
     try:
         from datetime import datetime as _dt
         row = {"timestamp": _dt.utcnow().isoformat(), "snapshot_ts": snapshot_ts,
@@ -446,7 +494,7 @@ def _log_alignment(snapshot_ts=None, spot=None, rsi=None, e9=None, e21=None,
                "short_signal": short_signal, "trade_opened": trade_opened,
                "block_reason": block_reason, "momentum_score": momentum_score,
                "funding_rate": funding_rate, "funding_z": funding_z, "funding_veto": funding_veto,
-               "pyramid_total": pyramid_total, "pyramid_agreement": pyramid_agreement}
+               "pyramid_total": pyramid_total, "pyramid_agreement": pyramid_agreement, "gex_z": gex_z}
         supa_post("alignment_log", row)
         print(f"[ALIGN_LOG] {block_reason} bull={bull_tech} bear={bear_tech} long={long_signal} short={short_signal} mom={momentum_score}")
     except Exception as _e:
@@ -504,6 +552,10 @@ def run_trader():
         _pyr_dir = "neutral"  # BEKLE / BLOKE
     print("[PYRAMID] total=%s decision=%s dir=%s" % (pyramid_total, _pyr_dec, _pyr_dir))
 
+    # GEX_Z (observe-only): 4H-bucket rolling z-score, canli esigi DEGISTIRMEZ, sadece loglar.
+    gex_z, _gz_n = compute_gex_z()
+    print("[GEX_Z] z=%s bars=%s (ham gex=%s)" % (gex_z, _gz_n, gex))
+
     try: run_trailing_shadow(price)
     except Exception as _e: print(f"[SHADOW] cagri hata: {_e}")
 
@@ -553,18 +605,18 @@ def run_trader():
         mom_score = momentum_score(e9[n], e21[n], e50[n], rsi_v, price, atr_v, direction=mom_direction)
         print(f"[TRADER] Momentum Q-Score (observe-only, {mom_direction}): {mom_score}/5.0")
     else:
-        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, gex=gex, hvl=hvl, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="tech_insufficient", funding_rate=funding_rate, funding_z=funding_z, pyramid_total=pyramid_total, pyramid_agreement=("pyr_%s_c4_blocked" % _pyr_dir if _pyr_dir!="neutral" else "neutral"))
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, gex=gex, hvl=hvl, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="tech_insufficient", funding_rate=funding_rate, funding_z=funding_z, pyramid_total=pyramid_total, pyramid_agreement=("pyr_%s_c4_blocked" % _pyr_dir if _pyr_dir!="neutral" else "neutral"), gex_z=gex_z)
         print("[TRADER] Teknik veri yetersiz"); return
 
     open_trades = supa_get("trades?status=eq.OPEN")
     closed_trades = supa_get("trades?status=eq.CLOSED&order=id.desc&limit=50")
     print(f"[TRADER] Açık: {len(open_trades)} | Kapalı son50: {len(closed_trades)}")
     if check_halt_status():
-        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="manual_halt", momentum_score=mom_score, funding_rate=funding_rate, funding_z=funding_z, pyramid_total=pyramid_total, pyramid_agreement=("pyr_%s_c4_blocked" % _pyr_dir if _pyr_dir!="neutral" else "neutral"))
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="manual_halt", momentum_score=mom_score, funding_rate=funding_rate, funding_z=funding_z, pyramid_total=pyramid_total, pyramid_agreement=("pyr_%s_c4_blocked" % _pyr_dir if _pyr_dir!="neutral" else "neutral"), gex_z=gex_z)
         print("[TRADER] MANUAL HALT aktif"); return
     ok, violations = check_invariants(open_trades, closed_trades, price)
     if not ok:
-        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="invariant", momentum_score=mom_score, funding_rate=funding_rate, funding_z=funding_z, pyramid_total=pyramid_total, pyramid_agreement=("pyr_%s_c4_blocked" % _pyr_dir if _pyr_dir!="neutral" else "neutral"))
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="invariant", momentum_score=mom_score, funding_rate=funding_rate, funding_z=funding_z, pyramid_total=pyramid_total, pyramid_agreement=("pyr_%s_c4_blocked" % _pyr_dir if _pyr_dir!="neutral" else "neutral"), gex_z=gex_z)
         print(f"[TRADER] INVARIANT: {violations}"); log_halt("AUTO", violations); return
     print("[TRADER] Invariants OK")
 
@@ -742,17 +794,17 @@ def run_trader():
                 print(f"[TRADER] REGIME EXIT SHORT @${price:.0f} PnL:${pnl:.0f}")
 
     if open_trades:
-        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="open_trade", momentum_score=mom_score, funding_rate=funding_rate, funding_z=funding_z, pyramid_total=pyramid_total, pyramid_agreement=("pyr_%s_c4_blocked" % _pyr_dir if _pyr_dir!="neutral" else "neutral"))
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="open_trade", momentum_score=mom_score, funding_rate=funding_rate, funding_z=funding_z, pyramid_total=pyramid_total, pyramid_agreement=("pyr_%s_c4_blocked" % _pyr_dir if _pyr_dir!="neutral" else "neutral"), gex_z=gex_z)
         print("[TRADER] Açık trade var — yeni açılmıyor"); return
     
     if flip_near:
-        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="flip_near", momentum_score=mom_score, funding_rate=funding_rate, funding_z=funding_z, pyramid_total=pyramid_total, pyramid_agreement=("pyr_%s_c4_blocked" % _pyr_dir if _pyr_dir!="neutral" else "neutral"))
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="flip_near", momentum_score=mom_score, funding_rate=funding_rate, funding_z=funding_z, pyramid_total=pyramid_total, pyramid_agreement=("pyr_%s_c4_blocked" % _pyr_dir if _pyr_dir!="neutral" else "neutral"), gex_z=gex_z)
         print(f"[TRADER] Flip yakın — bekle"); return
     if expiry_day:
-        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="expiry_day", momentum_score=mom_score, funding_rate=funding_rate, funding_z=funding_z, pyramid_total=pyramid_total, pyramid_agreement=("pyr_%s_c4_blocked" % _pyr_dir if _pyr_dir!="neutral" else "neutral"))
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="expiry_day", momentum_score=mom_score, funding_rate=funding_rate, funding_z=funding_z, pyramid_total=pyramid_total, pyramid_agreement=("pyr_%s_c4_blocked" % _pyr_dir if _pyr_dir!="neutral" else "neutral"), gex_z=gex_z)
         print("[TRADER] Expiry günü — bekle"); return
     if iv_crush:
-        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="iv_crush", momentum_score=mom_score, funding_rate=funding_rate, funding_z=funding_z, pyramid_total=pyramid_total, pyramid_agreement=("pyr_%s_c4_blocked" % _pyr_dir if _pyr_dir!="neutral" else "neutral"))
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), block_reason="iv_crush", momentum_score=mom_score, funding_rate=funding_rate, funding_z=funding_z, pyramid_total=pyramid_total, pyramid_agreement=("pyr_%s_c4_blocked" % _pyr_dir if _pyr_dir!="neutral" else "neutral"), gex_z=gex_z)
         print(f"[TRADER] IV Crush ({term_shape}, IV:{iv_rank:.0f}%) — bekle"); return
 
     long_signal  = bull_tech and e9[n]>e21[n] and price>hvl and gex>0
@@ -797,7 +849,7 @@ def run_trader():
         }
         supa_post("trades", tr)
         print(f"[TRADER] ✅ LONG @${e:.0f} Stop:${sp:.0f} TP:${tp2:.0f} Size:{sz} RR:{rr}")
-        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), long_signal=long_signal, short_signal=short_signal, trade_opened=True, block_reason="opened_long", momentum_score=mom_score, funding_rate=funding_rate, funding_z=funding_z, funding_veto=funding_veto, pyramid_total=pyramid_total, pyramid_agreement=pyramid_agreement)
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), long_signal=long_signal, short_signal=short_signal, trade_opened=True, block_reason="opened_long", momentum_score=mom_score, funding_rate=funding_rate, funding_z=funding_z, funding_veto=funding_veto, pyramid_total=pyramid_total, pyramid_agreement=pyramid_agreement, gex_z=gex_z)
 
     elif short_signal:
         e = price
@@ -818,11 +870,11 @@ def run_trader():
         }
         supa_post("trades", tr)
         print(f"[TRADER] ✅ SHORT @${e:.0f} Stop:${sp:.0f} TP:${tp2:.0f} Size:{sz} RR:{rr}")
-        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), long_signal=long_signal, short_signal=short_signal, trade_opened=True, block_reason="opened_short", momentum_score=mom_score, funding_rate=funding_rate, funding_z=funding_z, funding_veto=funding_veto, pyramid_total=pyramid_total, pyramid_agreement=pyramid_agreement)
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), long_signal=long_signal, short_signal=short_signal, trade_opened=True, block_reason="opened_short", momentum_score=mom_score, funding_rate=funding_rate, funding_z=funding_z, funding_veto=funding_veto, pyramid_total=pyramid_total, pyramid_agreement=pyramid_agreement, gex_z=gex_z)
     
     else:
         print(f"[TRADER] Sinyal yok — BEKLE")
-        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), long_signal=long_signal, short_signal=short_signal, trade_opened=False, block_reason="no_signal", momentum_score=mom_score, funding_rate=funding_rate, funding_z=funding_z, funding_veto=funding_veto, pyramid_total=pyramid_total, pyramid_agreement=pyramid_agreement)
+        _log_alignment(snapshot_ts=d.get("timestamp"), spot=spot, rsi=rsi_v, e9=e9[n], e21=e21[n], e50=e50[n], e200=e200[n], atr=atr_v, bull_tech=bull_tech, bear_tech=bear_tech, gex=gex, hvl=hvl, flip_near=flip_near, regime=regime, pyramid_decision=d.get("pyramid_decision"), long_signal=long_signal, short_signal=short_signal, trade_opened=False, block_reason="no_signal", momentum_score=mom_score, funding_rate=funding_rate, funding_z=funding_z, funding_veto=funding_veto, pyramid_total=pyramid_total, pyramid_agreement=pyramid_agreement, gex_z=gex_z)
 
     print("[TRADER] Tamamlandı")
 

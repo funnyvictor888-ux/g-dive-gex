@@ -48,3 +48,4 @@ src/TestChart.jsx
 
 # Tarihli yedekler (gdive_*.py.bak-<isim>-<tarih>)
 *.bak-*
+gex_z_cache.json

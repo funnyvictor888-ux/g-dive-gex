@@ -102,4 +102,26 @@ if tr:
     print("  toplam: %d | yon: %s | toplam pnl: %.2f | win: %d/%d (%.0f%%)" % (
         len(tr), dict(d), tot, wins, len(tr), 100*wins/len(tr)))
 
+print("\n" + "-"*64)
+print("7) FLIP_NEAR SHADOW (flip bloke ettigi long'lar karli mi zararli mi)")
+print("-"*64)
+fs = g("flip_shadow?select=status,pnl,exit_reason,entry,tp,stop&order=id.asc")
+if not fs:
+    print("  henuz ghost yok (flip_near + LONG kosulu birlikte olusmadi)")
+else:
+    opn = [x for x in fs if x.get("status") == "OPEN"]
+    cls = [x for x in fs if x.get("status") == "CLOSED"]
+    print("  toplam ghost: %d | acik: %d | kapali: %d" % (len(fs), len(opn), len(cls)))
+    if cls:
+        tp_n = sum(1 for x in cls if x.get("exit_reason") == "SHADOW_TP")
+        st_n = sum(1 for x in cls if x.get("exit_reason") == "SHADOW_STOP")
+        tot = sum((x.get("pnl") or 0) for x in cls)
+        wins = sum(1 for x in cls if (x.get("pnl") or 0) > 0)
+        print("  kapali ghost: TP=%d STOP=%d | win=%d/%d (%.0f%%)" % (tp_n, st_n, wins, len(cls), 100*wins/len(cls)))
+        print("  TOPLAM GHOST PnL: %+.2f" % tot)
+        print("  -> POZITIF ise: flip_near bu long'lari bloke ederek KAR kacirdi (edge killer sinyali).")
+        print("     NEGATIF ise: flip_near dogru korudu (o long'lar zarar ederdi).")
+        avg = tot/len(cls)
+        print("  ortalama ghost PnL: %+.2f (ghost basina)" % avg)
+
 print("\n" + "="*64)

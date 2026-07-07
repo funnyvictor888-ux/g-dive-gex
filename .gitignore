@@ -49,3 +49,7 @@ src/TestChart.jsx
 # Tarihli yedekler (gdive_*.py.bak-<isim>-<tarih>)
 *.bak-*
 gex_z_cache.json
+
+# Numarali yedekler (.bak2- .bak3- vs) + env/key dosyasi
+*.bak[0-9]*
+run_c4_cron.sh

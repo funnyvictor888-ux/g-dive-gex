@@ -323,13 +323,63 @@ FUNDING_LOOKBACK = 48
 # OBSERVE-ONLY: canli hala gex>0/gex<0 kullanir, gex_z sadece loglanir. Esik karari veri birikince.
 GEX_Z_WINDOW = 30   # 30 4H bar = 5 gun rolling pencere
 
+GEX_Z_CACHE = "/root/g-dive-gex/gex_z_cache.json"
+
+def _bar_key(ts_str):
+    from datetime import datetime as _dt
+    ts = _dt.fromisoformat(ts_str.replace("Z",""))
+    return ts.strftime("%Y-%m-%d ") + str(ts.hour//4*4).zfill(2)
+
+def _gex_z_from_bars(gex4h):
+    """4H bar listesinden son bar'in rolling z'sini hesapla."""
+    if len(gex4h) < GEX_Z_WINDOW + 1:
+        return None, len(gex4h)
+    win = gex4h[-GEX_Z_WINDOW-1:-1]
+    cur = gex4h[-1]
+    m = sum(win)/len(win)
+    var = sum((x-m)**2 for x in win)/len(win)
+    sd = var**0.5
+    return (cur - m)/(sd + 1e-9), len(gex4h)
+
 def compute_gex_z():
-    """Snapshots'tan 4H-bucket gex serisi kurup son bar'in rolling z-score'unu doner.
-    Doner: (gex_z, n_bars) veya (None, 0)."""
+    """4H-bucket gex serisi rolling z-score. CACHE'li: 4H bar degismediyse paginate ATLA,
+    sadece guncel snapshot'i cekip son bar'i tazele. Doner: (gex_z, n_bars) veya (None, 0)."""
     try:
-        from datetime import datetime as _dt
-        # Paginate: Supabase default max 1000/istek. 30 4H bar icin ~6 gun lazim.
-        # id.desc ile en yeniden basla, 6 sayfa (~6000 snapshot ~ 6-8 gun) cek.
+        import json as _json, os as _os
+        # Guncel snapshot (tek istek) - her tick lazim
+        latest = supa_get("snapshots?select=timestamp,total_net_gex&order=id.desc&limit=1")
+        if not latest or latest[0].get("total_net_gex") is None:
+            return None, 0
+        cur_ts = latest[0]["timestamp"]
+        cur_gex = latest[0]["total_net_gex"]
+        cur_key = _bar_key(cur_ts)
+
+        # Cache oku
+        cache = None
+        if _os.path.exists(GEX_Z_CACHE):
+            try:
+                with open(GEX_Z_CACHE) as _fh:
+                    cache = _json.load(_fh)
+            except Exception:
+                cache = None
+
+        # Cache gecerli mi: buckets var + en son bar key'i mevcut 4H icinde/oncesinde
+        if cache and cache.get("buckets"):
+            buckets = cache["buckets"]
+            # Guncel bar'i tazele (ayni 4H bar ise ustune yaz = bar kapanisi mantigi)
+            buckets[cur_key] = cur_gex
+            keys = sorted(buckets.keys())
+            gex4h = [buckets[k] for k in keys]
+            z, n = _gex_z_from_bars(gex4h)
+            # Cache'i guncelle (guncel bar tazelendi)
+            try:
+                with open(GEX_Z_CACHE, "w") as _fh:
+                    _json.dump({"buckets": buckets, "last_key": cur_key}, _fh)
+            except Exception:
+                pass
+            return z, n
+
+        # CACHE YOK/BOZUK: tam paginate (nadir - gunde ~ilk tick veya cache silinince)
         rows = []
         for _pg in range(6):
             batch = supa_get("snapshots?select=timestamp,total_net_gex&order=id.desc&limit=1000&offset=%d" % (_pg*1000))
@@ -341,24 +391,18 @@ def compute_gex_z():
         if not rows:
             return None, 0
         rows = [r for r in rows if r.get("total_net_gex") is not None]
-        rows.reverse()  # eskiden yeniye (id.desc cektik, ters cevir)
-        # 4H bucket, her dilimin SON degeri = bar kapanisi
+        rows.reverse()
         buckets = {}
         for r in rows:
-            ts = _dt.fromisoformat(r["timestamp"].replace("Z",""))
-            key = ts.strftime("%Y-%m-%d ") + str(ts.hour//4*4).zfill(2)
-            buckets[key] = r["total_net_gex"]
+            buckets[_bar_key(r["timestamp"])] = r["total_net_gex"]
         keys = sorted(buckets.keys())
         gex4h = [buckets[k] for k in keys]
-        if len(gex4h) < GEX_Z_WINDOW + 1:
-            return None, len(gex4h)
-        win = gex4h[-GEX_Z_WINDOW-1:-1]  # son bar HARIC onceki W bar
-        cur = gex4h[-1]
-        m = sum(win)/len(win)
-        var = sum((x-m)**2 for x in win)/len(win)
-        sd = var**0.5
-        z = (cur - m)/(sd + 1e-9)
-        return z, len(gex4h)
+        try:
+            with open(GEX_Z_CACHE, "w") as _fh:
+                _json.dump({"buckets": buckets, "last_key": keys[-1] if keys else None}, _fh)
+        except Exception:
+            pass
+        return _gex_z_from_bars(gex4h)
     except Exception as _e:
         print("[GEX_Z] hata: %s" % _e)
         return None, 0

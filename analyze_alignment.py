@@ -24,7 +24,7 @@ print("="*64)
 print(" C4 ALIGNMENT ANALIZ RAPORU  (son %d tick)" % N)
 print("="*64)
 
-sel = "alignment_log?select=timestamp,block_reason,bull_tech,bear_tech,gex,gex_z,hvl,spot,flip_near,long_signal,short_signal,funding_z,funding_veto,pyramid_agreement,pyramid_total,regime,trade_opened&order=id.desc"
+sel = "alignment_log?select=timestamp,block_reason,bull_tech,bear_tech,e9,e21,gex,gex_z,hvl,spot,flip_near,long_signal,short_signal,funding_z,funding_veto,pyramid_agreement,pyramid_total,regime,trade_opened&order=id.desc"
 rows = paginate(sel, limit=1000, maxpages=(N//1000)+1)[:N]
 if not rows:
     print("VERI YOK"); sys.exit(0)

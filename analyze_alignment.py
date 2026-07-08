@@ -43,13 +43,16 @@ print("\n" + "-"*64)
 print("2) FLIP_NEAR ANALIZI (bloklarken firsat kaciriyor mu)")
 print("-"*64)
 fn = [r for r in rows if r.get("block_reason") == "flip_near"]
-print("  flip_near tick: %d" % len(fn))
+print("  flip_near tick: %d (LONG kosulu = gercek 4-kosul: bull_tech+e9>e21+price>hvl+gex>0)" % len(fn))
 if fn:
     would_long = 0; would_short = 0
     for r in fn:
         g_ = r.get("gex") or 0; sp = r.get("spot") or 0; hvl = r.get("hvl") or 0
-        if r.get("bull_tech") and g_ > 0 and sp > hvl: would_long += 1
-        if r.get("bear_tech") and g_ < 0 and sp < hvl: would_short += 1
+        e9v = r.get("e9"); e21v = r.get("e21")
+        e9_gt = (e9v is not None and e21v is not None and e9v > e21v)
+        e9_lt = (e9v is not None and e21v is not None and e9v < e21v)
+        if r.get("bull_tech") and e9_gt and g_ > 0 and sp > hvl: would_long += 1
+        if r.get("bear_tech") and e9_lt and g_ < 0 and sp < hvl: would_short += 1
     print("  flip olmasa LONG kosulu olusurdu: %d (%.1f%%)" % (would_long, 100*would_long/len(fn)))
     print("  flip olmasa SHORT kosulu olusurdu: %d (%.1f%%)" % (would_short, 100*would_short/len(fn)))
 

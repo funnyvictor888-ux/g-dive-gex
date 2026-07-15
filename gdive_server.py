@@ -1522,15 +1522,24 @@ def run_cron():
             )
             urllib.request.urlopen(log_req)
             print(f"[TALEB] Shadow log kaydedildi: signal={taleb_signal} pin={pin_score:.1f} amp={amplifier:.2f}")
-            # -- Regime Logger (observe-only, Hurst + ADF) --
-            try:
-                from regime_logger import log_regime
-                # DOGRU VERI: gercek 4H bar kapanislari (irregular 5dk snapshot DEGIL)
-                prices_raw = fetch_4h_closes_deribit(bars=100) or []
-                if len(prices_raw) >= 20:
-                    log_regime(trigger_type="daily_snapshot", btc_price=data.get("spot", 0), prices=prices_raw)
-            except Exception as re:
-                print(f"[REGIME] daily_snapshot hatasi: {re}")
+            # -- Regime Logger DEVRE DISI (15 Tem 2026) --
+            # NEDEN KAPATILDI (korlemesine geri acma, once bu notu oku):
+            #  1) compute_hurst SEVIYE serisine R/S uyguluyordu (getiriye degil) + lags=[2,4,...]
+            #     dejenere kucuk lag iceriyordu -> H mekanik olarak ~0.9 cikiyordu.
+            #     KANIT: sentetik SAF RASSAL yuruyuse bile H=0.877 "TRENDING" dedi.
+            #     regime_log tablosunda biriken tum satirlar bu yuzden COP.
+            #  2) EP Chan esikleri (0.45/0.55) bu tahmin edici icin gecersiz: R/S kucuk
+            #     orneklemde yukari bias'li, rassal yuruyus bile n=100'de H~0.62 veriyor.
+            #  3) DUZELTILSE BILE SINYAL YOK: getiri serisi + min_lag=8 ile olculdu,
+            #     ayni uzunlukta 200 rassal yuruyus null dagilimina karsi sinandi:
+            #       n=100: BTC H=0.678 vs null mean=0.621 sd=0.092 -> z=0.63 (%74 persentil)
+            #       n=500: BTC H=0.593 vs null mean=0.572 sd=0.041 -> z=0.50 (%68 persentil)
+            #     Iki pencerede de |z|<1.65 -> BTC 4H getirileri rassal yuruyusten
+            #     AYIRT EDILEMIYOR. ADF de bagimsiz olarak ayni sonuc (p=0.157>0.05).
+            #  GERI ACMA KOSULU: sadece (a) getiri serisi, (b) min_lag>=8, (c) esikler
+            #  olculmus null dagilimdan kalibre (n=500 icin 0.504/0.640), (d) BTC null'a
+            #  karsi |z|>1.65 cikarsa. Bu kosullar saglanmadan sleeve_gate'e ASLA baglanma.
+            #  Dosya (regime_logger.py) duruyor, sadece cagri kapali.
             # -- Gamma Fatigue (observe-only, henuz trade mantigina girmiyor) --
             try:
                 from gamma_fatigue_integration import run_gamma_fatigue_tick

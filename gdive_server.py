@@ -376,6 +376,60 @@ def calc_gex(spot, summaries):
 
     return result
 
+def total_gamma_at(price, summaries):
+    """Verilen fiyat seviyesinde toplam dealer gamma ($). Dealer-sign: call +, put -.
+    NOT: bu varsayim SPX icin standart; BTC/Deribit covered-call yapisinda supheli
+    (memory'de kayitli ayni uyari GEX/vanna icin de gecerli). Observe-only, tutarlilik icin ayni."""
+    total = 0.0
+    for s in summaries:
+        parts = s.get("instrument_name", "").split("-")
+        if len(parts) < 4:
+            continue
+        try:
+            strike = float(parts[2])
+        except Exception:
+            continue
+        opt_type = parts[3]
+        oi = s.get("open_interest", 0) or 0
+        iv = (s.get("mark_iv") or 0) / 100
+        T = parse_expiry_days(parts[1]) / 365.0
+        if oi <= 0 or iv <= 0 or T <= 0:
+            continue
+        g = black_scholes_gamma(price, strike, T, 0.0, iv)
+        gex = g * oi * price * price
+        total += gex if opt_type == "C" else -gex
+    return total
+
+
+def find_gamma_flip_real(spot, summaries, span=0.20, steps=60):
+    """GERCEK gamma flip: fiyat izgarasinda toplam gamma'nin sifiri kestigi seviye.
+    (SPX cboe_spx_gex.py gamma_flip() ile ayni mantik.)
+    find_flip_point()'ten farki: komsu strike isaretine degil, TOPLAM gamma'ya bakar.
+    Doner: flip fiyati veya None (izgara icinde isaret degisimi yoksa)."""
+    lo, hi = spot * (1 - span), spot * (1 + span)
+    step = (hi - lo) / steps
+    prev_p = lo
+    prev_g = total_gamma_at(lo, summaries)
+    best = None
+    for i in range(1, steps + 1):
+        p = lo + i * step
+        g = total_gamma_at(p, summaries)
+        if prev_g * g < 0:  # isaret degisti -> lineer interpolasyon
+            cross = prev_p + (p - prev_p) * abs(prev_g) / (abs(prev_g) + abs(g))
+            if best is None or abs(cross - spot) < abs(best - spot):
+                best = cross
+        prev_p, prev_g = p, g
+    return round(best, 2) if best else None
+
+
+def find_hvl_real(gex_nodes):
+    """GERCEK HVL: mutlak net GEX'i en buyuk strike (miknatis).
+    C4'un mevcut 'hvl' degiskeni bu DEGIL - o 'spota en yakin pozitif dugum'."""
+    if not gex_nodes:
+        return None
+    return max(gex_nodes, key=lambda n: abs(n["net_gex"]))["strike"]
+
+
 # ── Gamma Regime Analyzer ─────────────────────────────────────────
 import datetime as _dt
 
@@ -937,6 +991,36 @@ def build_data():
     neg_pockets = find_neg_pockets(mq.get("gex_by_strike",{}), spot)
     pos_walls_data = find_pos_walls(mq.get("gex_by_strike",{}), spot)
     gamma_regime_info = gamma_regime_analysis(spot, flip_point, mq.get("gex_by_strike",{}))
+
+    # --- OBSERVE-ONLY (18 Tem 2026): gercek flip/HVL olcumu. TRADE AKISINA DOKUNMAZ. ---
+    # Mevcut flip_point/hvl bozuk: build_menthorq_state gex_by_strike dondurmuyor ->
+    # find_flip_point olu kod -> flip_point=hvl; ayrica hvl dongusu de olu (hvl=spot
+    # baslangici yuzunden) -> hvl = "spota en yakin pozitif dugum" -> spot>hvl ile
+    # flip_near TAUTOLOJI -> LONG matematiksel olarak imkansiz (13/13 SHORT).
+    # Burada gercegini HESAPLIYOR ama KULLANMIYORUZ; 20-30 ornek birikince karsilastirilacak.
+    try:
+        _fp_real = find_gamma_flip_real(spot, summaries)
+        _hvl_real = find_hvl_real(gex_nodes)
+        gamma_regime_info["flip_point_real"] = _fp_real
+        gamma_regime_info["hvl_real"] = _hvl_real
+        if _fp_real:
+            _fd_real = abs(spot - _fp_real) / spot * 100
+            gamma_regime_info["flip_dist_real_pct"] = round(_fd_real, 2)
+            gamma_regime_info["flip_near_real"] = _fd_real < 2.0
+            gamma_regime_info["in_positive_real"] = spot > _fp_real
+        else:
+            gamma_regime_info["flip_dist_real_pct"] = None
+            gamma_regime_info["flip_near_real"] = None
+            gamma_regime_info["in_positive_real"] = None
+        # long_ok_real = gercek flip'in RAHATCA ustunde (pozitif gamma bolgesi).
+        # DIKKAT: hvl_real'i kapi olarak KULLANMA - o bir MIKNATIS (en buyuk mutlak GEX),
+        # yon filtresi degil. Eski koddaki "spot > hvl" bozuk semantikti (hvl aslinda
+        # flip'ti). Gercek ayrisimda flip = rejim siniri, HVL = hedef/miknatis.
+        gamma_regime_info["long_ok_real"] = bool(
+            _fp_real and spot > _fp_real and abs(spot - _fp_real) / spot * 100 >= 2.0
+        )
+    except Exception as _e:
+        print(f"[REALFLIP] hata: {_e}")
     call_resistance = call_walls[0] if call_walls else round(spot * 1.1 / 1000) * 1000
     put_support     = put_walls[0]  if put_walls  else round(spot * 0.9 / 1000) * 1000
 

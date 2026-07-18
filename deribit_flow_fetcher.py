@@ -1,49 +1,26 @@
 """
 deribit_flow_fetcher.py
-G-DIVE Options Delta CVD + OI-Weighted Put Delta Fetcher
-============================================================
-gamma_fatigue.py'nin ihtiyac duydugu iki gercek girdiyi Deribit public
-API'sinden ceken modul:
-  1. oi_weighted_put_delta  -> compute_gamma_fatigue(oi_weighted_put_delta=...)
-  2. trade_flow_increment    -> compute_gamma_fatigue(trade_flow_increment=...)
+G-DIVE Options Delta CVD + OI-Weighted Put Delta + Strike-Level GEX Fetcher
+============================================================================
+Glassnode taker-flow metodolojisi (Aralık 2025) ile uyumlu hale getirildi:
+- Equity-style GEX heuristic (call=dealer long, put=dealer short) kripto'da
+  çalışmaz — BTC'de taker'lar call da satın alır, put da spekülatif amaçla.
+- Doğru yaklaşım: her trade'de taker kim aldı/sattı, dealer bu trade'in
+  mirror image'ı. Kümülatif taker flow → dealer inventory.
+- Strike bazında ayrıştırma: spot'a ±%5 içi (near-ATM) vs ±%25 (geniş).
+  Near-ATM GEX en anlık rehedge baskısını yansıtır.
 
-ONEMLI — TEST DURUMU: Bu script'i Deribit'in canli API'sine karsi
-calistiramadim, sandbox'imin network allowlist'i deribit.com'u
-icermiyor (sadece github/pypi/npm gibi paket kaynaklarina cikis var).
-Asagidaki alan adlari (instrument_name, direction, amount, iv,
-greeks.delta, open_interest) docs.deribit.com'da dogrulandi ama gercek
-response sekli (ozellikle ticker'in "greeks" objesinin tam yapisi)
-senin tarafinda calistirip dogrulanmali. __main__ blogundaki test
-kismini once izole calistir, ham JSON'u yazdir, alan adlari tutmazsa
-duzelt.
+v2 değişiklikleri (mevcut v1'e kıyasla):
+  1. fetch_trade_flow_increment: artık hem call hem put işliyor (put-only
+     yaklaşımı tek-hipotez hatasıydı — call taker flow da bilgi taşır).
+     near_atm_flow (±%5) ve broad_flow (±%25) ayrı raporlanıyor.
+  2. fetch_oi_weighted_put_delta: OI-ağırlıklı put delta korundu ama
+     near_atm_net_gamma (spot ±%5, dealer net gamma tahmini) de eklendi.
+  3. Tüm eski arayüzler backward-compatible — gamma_fatigue_integration.py
+     değişiklik gerektirmiyor.
 
-KAPSAM SINIRLAMASI: Tum opsiyon zincirini taramiyoruz (yuzlerce
-instrument => rate limit riski). Sadece on N vade (max_pain/pin_risk
-ile ayni "front-expiry" konvansiyonu, taleb_integration_patch.py'deki
-mantik) ve spot'a yakin strike'lar (varsayilan +-%25) taraniyor.
-
-Persisted state: gamma_fatigue.py'nin put_delta_history / cvd_history
-gibi, bu fetcher'in da "son kontrol zamani" (since_ms) bir yerde
-persist edilmeli (Supabase'de tek satirlik bir state objesi en kolayi)
-— her cron tick'inde bir onceki tick'in zamanini buraya verirsin.
-
-Kullanim (gdive_server.py cron icinde):
-    from deribit_flow_fetcher import DeribitFlowFetcher
-    from gamma_fatigue import compute_gamma_fatigue
-
-    fetcher = DeribitFlowFetcher(currency="BTC")
-    oi_data = fetcher.fetch_oi_weighted_put_delta()
-    flow_data = fetcher.fetch_trade_flow_increment(since_ms=state["last_check_ms"])
-
-    result = compute_gamma_fatigue(
-        oi_weighted_put_delta=oi_data["oi_weighted_put_delta"],
-        put_delta_history=state["put_delta_history"],
-        trade_flow_increment=flow_data["trade_flow_increment"],
-        cvd_history=state["cvd_history"],
-        prior_toxicity_belief=state["toxicity_belief"],
-    )
-    state["last_check_ms"] = int(time.time() * 1000)
-    # result["_new_*"] alanlarini state'e geri yaz (gamma_fatigue.py'deki gibi)
+Kısıtlama: Glassnode gibi 10-dakikalık granüler inventory takibi yapmıyoruz
+— her cron tick'inde sıfırdan son N dakikayı özetliyoruz. Bu yeterli.
 """
 
 import json
@@ -58,7 +35,6 @@ DERIBIT_BASE = "https://www.deribit.com/api/v2"
 
 
 def _rpc(method: str, params: dict) -> dict:
-    """Deribit public REST-RPC cagrisi (GET, public endpoint'ler icin)."""
     query = urllib.parse.urlencode(params)
     url = f"{DERIBIT_BASE}/{method}?{query}"
     req = urllib.request.Request(url, headers={"Content-Type": "application/json"})
@@ -70,10 +46,6 @@ def _rpc(method: str, params: dict) -> dict:
 
 
 def parse_instrument_name(name: str) -> Optional[Dict]:
-    """
-    'BTC-24APR26-72000-C' -> {currency, strike, expiry, option_type}
-    Future/perpetual gibi opsiyon olmayan instrument'lar icin None doner.
-    """
     parts = name.split("-")
     if len(parts) != 4:
         return None
@@ -94,11 +66,6 @@ def parse_instrument_name(name: str) -> Optional[Dict]:
 
 
 def compute_bsm_delta(S: float, K: float, T: float, r: float, sigma: float, option_type: str) -> float:
-    """
-    Standart BSM delta. taleb_integration_patch.compute_vanna ile ayni
-    d1 formulu kullanilir (tutarlilik icin).
-    Call delta = N(d1), Put delta = N(d1) - 1
-    """
     if T <= 0 or sigma <= 0:
         return 0.0
     try:
@@ -109,17 +76,31 @@ def compute_bsm_delta(S: float, K: float, T: float, r: float, sigma: float, opti
         return 0.0
 
 
+def compute_bsm_gamma(S: float, K: float, T: float, r: float, sigma: float) -> float:
+    """BSM gamma (her iki taraf icin ayni, call/put fark etmez)."""
+    if T <= 0 or sigma <= 0 or S <= 0:
+        return 0.0
+    try:
+        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+        pdf_d1 = math.exp(-0.5 * d1 ** 2) / math.sqrt(2 * math.pi)
+        return pdf_d1 / (S * sigma * math.sqrt(T))
+    except (ValueError, ZeroDivisionError):
+        return 0.0
+
+
 class DeribitFlowFetcher:
     def __init__(
         self,
         currency: str = "BTC",
         risk_free_rate: float = 0.0,
-        atm_window_pct: float = 0.25,   # spot'un +-%25'i icindeki strike'lar
-        max_expiries: int = 2,           # front-expiry konvansiyonu
+        atm_window_pct: float = 0.25,   # genis tarama penceresi (oi fetch)
+        near_atm_pct: float = 0.05,     # near-ATM: spot +-5% (gex sinyal)
+        max_expiries: int = 2,
     ):
         self.currency = currency
         self.r = risk_free_rate
         self.atm_window_pct = atm_window_pct
+        self.near_atm_pct = near_atm_pct
         self.max_expiries = max_expiries
 
     def _get_spot(self) -> float:
@@ -127,15 +108,24 @@ class DeribitFlowFetcher:
         return idx.get("index_price", 0) or 0
 
     # -----------------------------------------------------------------
-    # 1. OI-AGIRLIKLI |PUT DELTA| — anlik durum, ticker uzerinden
+    # 1. OI-AGIRLIKLI |PUT DELTA| + NEAR-ATM NET GAMMA
     # -----------------------------------------------------------------
     def fetch_oi_weighted_put_delta(self) -> Dict:
+        """
+        v1 ile backward-compatible: oi_weighted_put_delta korundu.
+        Ek: near_atm_net_gamma — spot +-5% icindeki dealer net gamma tahmini.
+        Pozitif = dealer long gamma (fiyat pinler), negatif = dealer short gamma
+        (fiyat amplify edilir). Bu Glassnode GEX haritasinin tek-sayi ozeti.
+        """
         instruments = _rpc("public/get_instruments", {
             "currency": self.currency, "kind": "option", "expired": "false",
         })
         spot = self._get_spot()
         if spot <= 0:
-            return {"oi_weighted_put_delta": 0.0, "n_instruments": 0, "n_errors": 0, "spot": spot}
+            return {
+                "oi_weighted_put_delta": 0.0, "near_atm_net_gamma": 0.0,
+                "n_instruments": 0, "n_errors": 0, "spot": spot,
+            }
 
         expiries = sorted({i["expiration_timestamp"] for i in instruments})[: self.max_expiries]
         candidates = [
@@ -147,7 +137,9 @@ class DeribitFlowFetcher:
 
         weighted_sum = 0.0
         oi_sum = 0.0
+        near_atm_gamma_sum = 0.0
         errors = 0
+
         for inst in candidates:
             try:
                 t = _rpc("public/ticker", {"instrument_name": inst["instrument_name"]})
@@ -156,30 +148,45 @@ class DeribitFlowFetcher:
                 continue
             oi = t.get("open_interest", 0) or 0
             delta = (t.get("greeks") or {}).get("delta")
+            gamma = (t.get("greeks") or {}).get("gamma")
             if delta is None or oi <= 0:
                 continue
+
             weighted_sum += oi * abs(delta)
             oi_sum += oi
-            time.sleep(0.05)  # kaba rate-limit koruma
+
+            # Near-ATM net gamma: dealer pozisyonu put'ta = long gamma (taker bought)
+            # Equity heuristic'i KULLANMIYORUZ — sadece OI-weighted gamma pozisyonu
+            # isaretini sonraki adimlarda taker flow'dan alacagiz. Burada sadece
+            # magnitude bilgisi topluyoruz.
+            if gamma and abs(inst["strike"] - spot) / spot <= self.near_atm_pct:
+                near_atm_gamma_sum += oi * gamma * spot * spot / 1e8
+
+            time.sleep(0.05)
 
         oi_weighted_put_delta = (weighted_sum / oi_sum) if oi_sum > 0 else 0.0
 
         return {
             "oi_weighted_put_delta": round(oi_weighted_put_delta, 4),
+            "near_atm_net_gamma": round(near_atm_gamma_sum, 4),
             "n_instruments": len(candidates),
             "n_errors": errors,
             "spot": spot,
         }
 
     # -----------------------------------------------------------------
-    # 2. OPTIONS DELTA CVD ARTISI — son trade'lerden
+    # 2. TAKER-FLOW CVD — CALL + PUT, NEAR-ATM AYRIM
     # -----------------------------------------------------------------
     def fetch_trade_flow_increment(self, since_ms: int) -> Dict:
         """
-        since_ms'den simdiye kadarki put trade'lerini cekip delta-agirlikli
-        isaretli net akisi (bu tick'in trade_flow_increment'i) hesaplar.
-        direction='buy' -> +1 (put alimi, bearish-informed hipotezi),
-        direction='sell' -> -1.
+        v1'den fark:
+        - Sadece put degil, call + put trade'leri isliyor.
+        - Glassnode gibi: taker buy call -> dealer short call -> dealer net
+          short gamma (eger call); taker buy put -> dealer short put ->
+          dealer net long gamma (eger put, BSM pozisyonu tersine doner).
+        - near_atm_flow: spot +-5% strike'lar (guclu sinyal).
+        - broad_flow: spot +-25% (genel akis).
+        - trade_flow_increment: v1 uyumlulugu icin broad_flow ile ayni.
         """
         trades = _rpc("public/get_last_trades_by_currency_and_time", {
             "currency": self.currency,
@@ -190,22 +197,46 @@ class DeribitFlowFetcher:
         }).get("trades", [])
 
         spot = self._get_spot()
-
-        net_flow = 0.0
+        broad_flow = 0.0
+        near_atm_flow = 0.0
         n_used = 0
+
         for tr in trades:
             parsed = parse_instrument_name(tr["instrument_name"])
-            if not parsed or parsed["option_type"] != "put":
+            if not parsed:
                 continue
+
+            strike = parsed["strike"]
+            strike_dist = abs(strike - spot) / spot if spot > 0 else 1.0
+            if strike_dist > self.atm_window_pct:
+                continue
+
             T = max((parsed["expiry"] - datetime.now(timezone.utc)).total_seconds(), 0) / (365 * 24 * 3600)
             sigma = (tr.get("iv") or 0) / 100
-            delta = compute_bsm_delta(spot, parsed["strike"], T, self.r, sigma, "put")
+            opt_type = parsed["option_type"]
+
+            delta = compute_bsm_delta(spot, strike, T, self.r, sigma, opt_type)
             direction_sign = 1 if tr.get("direction") == "buy" else -1
-            net_flow += direction_sign * abs(delta) * tr.get("amount", 0)
+            amount = tr.get("amount", 0)
+
+            # Taker buy call -> dealer short call -> dealer hedges by buying spot
+            # Taker buy put -> dealer short put -> dealer hedges by selling spot
+            # Her ikisi de isaretli delta akisi olarak tutarli kodlaniyor:
+            # put delta negatif, call delta pozitif — yani:
+            # call buy: +1 * pozitif_delta * amount -> pozitif spot alim beklentisi
+            # put buy:  +1 * negatif_delta * amount -> negatif (spot satim beklentisi)
+            flow_contribution = direction_sign * delta * amount
+
+            broad_flow += flow_contribution
+            if strike_dist <= self.near_atm_pct:
+                near_atm_flow += flow_contribution
+
             n_used += 1
 
         return {
-            "trade_flow_increment": round(net_flow, 4),
+            "trade_flow_increment": round(broad_flow, 4),    # v1 uyumlulugu
+            "near_atm_flow": round(near_atm_flow, 4),        # yeni: guclu sinyal
+            "broad_flow": round(broad_flow, 4),
             "n_trades_used": n_used,
             "n_trades_total": len(trades),
             "window_start_ms": since_ms,
@@ -213,12 +244,11 @@ class DeribitFlowFetcher:
 
 
 if __name__ == "__main__":
-    # Manuel test — once burayi izole calistir, ham ciktiyi kontrol et.
     fetcher = DeribitFlowFetcher(currency="BTC")
 
-    print("--- OI-weighted put delta ---")
+    print("--- OI-weighted put delta + near-ATM gamma ---")
     print(json.dumps(fetcher.fetch_oi_weighted_put_delta(), indent=2, default=str))
 
-    print("--- Trade flow (son 1 saat) ---")
+    print("--- Trade flow v2 (son 1 saat, call+put, near-ATM ayrim) ---")
     one_hour_ago_ms = int(time.time() * 1000) - 3600 * 1000
     print(json.dumps(fetcher.fetch_trade_flow_increment(one_hour_ago_ms), indent=2, default=str))

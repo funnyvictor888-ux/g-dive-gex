@@ -183,6 +183,46 @@ def _record_flip_shadow(entry, stop, tp, size, atr_v, flip_dist_pct, gex, gex_z,
     except Exception as e:
         print(f"[FLIP_SHADOW] record hata (gercek trade etkilenmez): {e}")
 
+def _record_real_flip_shadow(entry, stop, tp, size, atr_v, flip_dist_real, gex, gex_z, lev):
+    """GERCEK flip mantigiyla (long_ok_real=True) LONG kosulu olusunca ghost long kaydet.
+    flip_shadow'dan FARKI: 'flip_near bloke etti' degil, 'gercek flip'e gore ACILMALIYDI' sorusu.
+    Ayni anda acik ghost varsa duplike acma (tek episode, overlapping yok)."""
+    try:
+        openg = supa_get("real_flip_shadow?status=eq.OPEN&select=id") or []
+        if openg:
+            return
+        supa_post("real_flip_shadow", {
+            "entry": round(entry,2), "stop": round(stop,2), "tp": round(tp,2),
+            "size": size, "atr": round(atr_v,2), "flip_dist_real": round(flip_dist_real,4),
+            "gex": gex, "gex_z": gex_z, "status": "OPEN"
+        })
+        print(f"[REAL_FLIP_SHADOW] ghost LONG entry={entry:.0f} stop={stop:.0f} tp={tp:.0f} (gercek flip long_ok)")
+    except Exception as e:
+        print(f"[REAL_FLIP_SHADOW] record hata (gercek trade etkilenmez): {e}")
+
+
+def run_real_flip_shadow(price, lev=2):
+    """Acik gercek-flip ghost'lari izle: stop/tp'ye degince kapat + PnL yaz."""
+    try:
+        ghosts = supa_get("real_flip_shadow?status=eq.OPEN&select=*") or []
+        for g in ghosts:
+            entry = g.get("entry",0); stop = g.get("stop",0); tp = g.get("tp",0)
+            size = g.get("size",0); gid = g.get("id")
+            exit_p = None; reason = None
+            if price <= stop:
+                exit_p = stop; reason = "SHADOW_STOP"
+            elif price >= tp:
+                exit_p = tp; reason = "SHADOW_TP"
+            if exit_p is not None:
+                pnl,_ = _calc_realistic_pnl(entry, exit_p, size, "LONG", g.get("opened_at",""), lev)
+                supa_patch(f"real_flip_shadow?id=eq.{gid}", {
+                    "status":"CLOSED","exit_price":exit_p,"pnl":round(pnl,2),
+                    "exit_at":datetime.utcnow().isoformat(),"exit_reason":reason})
+                print(f"[REAL_FLIP_SHADOW] ghost #{gid} kapandi @{exit_p:.0f} {reason} pnl=${pnl:.0f}")
+    except Exception as e:
+        print(f"[REAL_FLIP_SHADOW] run hata (gercek trade etkilenmez): {e}")
+
+
 def run_flip_shadow(price, lev=2):
     """Acik flip ghost'lari izle: price stop veya tp'ye degince kapat + PnL yaz."""
     try:
@@ -639,6 +679,8 @@ def run_trader():
     try: run_trailing_shadow(price)
     except Exception as _e: print(f"[SHADOW] cagri hata: {_e}")
     try: run_flip_shadow(price)
+    except Exception: pass
+    # try: run_real_flip_shadow(price)  # DISABLED 23 Jul — tablo yok, edge_shadow yerine geçti
     except Exception as _e: print(f"[FLIP_SHADOW] cagri hata: {_e}")
 
     mom_score = None  # default, asagida hesaplanirsa doldurulur

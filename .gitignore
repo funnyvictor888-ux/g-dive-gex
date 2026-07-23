@@ -53,3 +53,5 @@ gex_z_cache.json
 # Numarali yedekler (.bak2- .bak3- vs) + env/key dosyasi
 *.bak[0-9]*
 run_c4_cron.sh
+spx_env.sh
+run_edge_shadow_cron.sh

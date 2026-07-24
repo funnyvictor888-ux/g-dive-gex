@@ -217,6 +217,8 @@ def run_gamma_fatigue_tick(data: dict, pin: dict, shadow_gex: dict, rehedge: dic
         "static_band_pct": rehedge.get("band_pct"),  # mevcut statik modelle yan yana
         "skewed_lower_band_pct": skewed_result["lower_band_pct"],
         "skewed_upper_band_pct": skewed_result["upper_band_pct"],
+        "near_atm_flow": flow_data.get("near_atm_flow"),
+        "near_atm_net_gamma": oi_data.get("near_atm_net_gamma"),
     })
 
     print(

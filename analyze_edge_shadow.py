@@ -135,5 +135,66 @@ def main():
                   f"entry={float(r['entry']):.0f} stop={float(r['stop']):.0f} "
                   f"tp={float(r['tp']):.0f} opened={r['opened_at'][:16]}")
 
+    # ─── 7) SHADOW TP ANALIZI (paralel, karar için) ───
+    print(f"\n7) SHADOW TP ANALIZI (1.5×ATR ve 2.0×ATR hedefleri)")
+    print(f"   Kural: shadow hit = (hit_at kaydı var) VEYA (peak hedefi geçti)")
+    def shadow_hit(r, label):
+        if r.get(f"{label}_hit_at"):
+            return True
+        target = r.get(f"{label}_target")
+        peak = r.get("peak")
+        if target is None or peak is None:
+            return None  # veri yok
+        target, peak = float(target), float(peak)
+        return (peak >= target) if r["direction"] == "LONG" else (peak <= target)
+
+    for dirx in ("LONG", "SHORT"):
+        drx = [r for r in rows if r["direction"] == dirx]
+        if not drx:
+            continue
+        n_total = len(drx)
+        for label, mult in [("tp_1_5", 1.5), ("tp_2_0", 2.0)]:
+            hits = sum(1 for r in drx if shadow_hit(r, label) is True)
+            no_data = sum(1 for r in drx if shadow_hit(r, label) is None)
+            n_scored = n_total - no_data
+            rate = hits / n_scored * 100 if n_scored else 0
+            # gerçek zamanda kaydedilen (canlı takip)
+            live_hits = sum(1 for r in drx if r.get(f"{label}_hit_at"))
+            print(f"   {dirx} {label} ({mult}×ATR): {hits}/{n_scored} hit "
+                  f"({rate:.0f}%) — canlı kaydedilen: {live_hits}")
+
+    # Kapalı ghost bazlı — gerçek karar simülasyonu
+    if closes:
+        print(f"\n   Kapalı ghost için TP-önce-STOP simülasyon:")
+        for label, mult in [("tp_1_5", 1.5), ("tp_2_0", 2.0)]:
+            sim_pnls = []
+            for r in closes:
+                pnl_actual = float(r.get("pnl") or 0)
+                if shadow_hit(r, label) is True:
+                    # TP hit varsayımı: R:R 1:mult/1.5, kazanç ATR·mult·size·leverage
+                    entry = float(r["entry"])
+                    atr = float(r["atr"])
+                    size = float(r["size"])
+                    if r["direction"] == "LONG":
+                        target = entry + atr * mult
+                    else:
+                        target = entry - atr * mult
+                    days_est = float(r.get("days_held") or 1) * 0.5
+                    if r["direction"] == "LONG":
+                        gross = (target - entry) * size * 2  # LEVERAGE
+                    else:
+                        gross = (entry - target) * size * 2
+                    notional = (entry + target) / 2 * size
+                    pnl_sim = gross - notional*0.0014 - notional*0.00027*days_est
+                    sim_pnls.append(pnl_sim)
+                else:
+                    sim_pnls.append(pnl_actual)  # stop
+            actual_total = sum(float(r.get("pnl") or 0) for r in closes)
+            sim_total = sum(sim_pnls)
+            n_hit = sum(1 for r in closes if shadow_hit(r, label) is True)
+            print(f"     {label} ({mult}×ATR): {n_hit}/{len(closes)} TP hit → "
+                  f"sim toplam ${sim_total:+.0f} (actual ${actual_total:+.0f}, "
+                  f"fark ${sim_total-actual_total:+.0f})")
+
 if __name__ == "__main__":
     main()

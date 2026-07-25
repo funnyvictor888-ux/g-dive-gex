@@ -109,9 +109,13 @@ def open_ghost(direction, spot, flip_point, flip_dist_pct, atr, metadata):
     if direction == "LONG":
         stop = spot - atr * ATR_STOP_MULT
         tp = spot + atr * ATR_TP_MULT
+        tp_1_5 = spot + atr * 1.5
+        tp_2_0 = spot + atr * 2.0
     else:  # SHORT
         stop = spot + atr * ATR_STOP_MULT
         tp = spot - atr * ATR_TP_MULT
+        tp_1_5 = spot - atr * 1.5
+        tp_2_0 = spot - atr * 2.0
 
     risk_dollars = CAPITAL * RISK_PCT
     size = round(risk_dollars / (atr * ATR_STOP_MULT), 4)
@@ -129,6 +133,8 @@ def open_ghost(direction, spot, flip_point, flip_dist_pct, atr, metadata):
         "atr": round(atr, 2),
         "stop": round(stop, 2),
         "tp": round(tp, 2),
+        "tp_1_5_target": round(tp_1_5, 2),
+        "tp_2_0_target": round(tp_2_0, 2),
         "size": size,
         "bull_tech": metadata.get("bull_tech"),
         "bear_tech": metadata.get("bear_tech"),
@@ -193,6 +199,25 @@ def update_open_ghosts(price):
         elif direction == "SHORT" and price < peak:
             peak = price
             _patch(f"long_edge_shadow?id=eq.{gid}", {"peak": round(peak, 2)})
+
+        # ── SHADOW TP TAKIBI (paralel, gerçek TP/STOP kararını ETKILEMEZ) ──
+        # 1.5×ATR ve 2.0×ATR hedeflerine dokunma anını kaydet
+        for label, mult in [("tp_1_5", 1.5), ("tp_2_0", 2.0)]:
+            already_hit = g.get(f"{label}_hit_at") is not None
+            target_v = g.get(f"{label}_target")
+            if already_hit or target_v is None:
+                continue
+            target = float(target_v)
+            hit = (direction == "LONG" and price >= target) or \
+                  (direction == "SHORT" and price <= target)
+            if hit:
+                _patch(f"long_edge_shadow?id=eq.{gid}", {
+                    f"{label}_hit_at": now_iso,
+                    f"{label}_hit_price": round(price, 2),
+                })
+                held_h = (now_ts - opened_dt).total_seconds() / 3600
+                print(f"[EDGE_SHADOW] shadow-TP {label} HIT ghost #{gid} {direction} "
+                      f"@${price:.0f} (target ${target:.0f}, held {held_h:.1f}h)")
 
         # Exit kontrolü
         exit_reason = None

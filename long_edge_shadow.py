@@ -16,12 +16,25 @@ Live trade akışına DOKUNMAZ. Sadece Supabase'e ghost yazar/günceller.
 Mevcut flip_shadow'a paralel çalışır, ilgili değil.
 """
 
-import os, json, urllib.request
+import os, json, urllib.request, re
 from datetime import datetime, timezone
 from urllib.error import URLError, HTTPError
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+
+
+def _parse_ts(s):
+    """Supabase timestamps have variable microsecond precision (3, 5, or 6 digits).
+    Python 3.10 fromisoformat only accepts 3 or 6 digits — normalize to 6."""
+    if not s:
+        raise ValueError("empty timestamp")
+    m = re.match(r'^(.*?)\.(\d+)(.*)$', s)
+    if m:
+        base, micro, tz = m.groups()
+        micro = (micro + "000000")[:6]
+        s = f"{base}.{micro}{tz}"
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 # ─────────────────────────────────────────────────────
 # Slot band tanımları — 5 slot, LONG ve SHORT için aynı
@@ -187,7 +200,7 @@ def update_open_ghosts(price):
         peak = float(g.get("peak") or entry)
         opened_at = g["opened_at"]
         try:
-            opened_dt = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
+            opened_dt = _parse_ts(opened_at)
         except Exception:
             continue
         days_held = (now_ts - opened_dt).total_seconds() / 86400

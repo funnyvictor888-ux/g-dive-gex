@@ -145,29 +145,71 @@ def run_llm_filter(gamma_score, regime):
     # Veri topla
     fomc = fetch_fomc_statement()
 
-    # Deribit verisi cache'den al
+    # Deribit verisi cache'den al — ham OI/strike verisi (arxiv 2512.17923)
     deribit_summary = "Deribit verisi bekleniyor."
     onchain_summary = "On-chain verisi bekleniyor."
+    raw_strike_data = ""
     with cache["lock"]:
         cd = cache.get("data")
         if cd:
             mq = cd.get("menthorq", {})
+            spot = cd.get("spot", 0)
             deribit_summary = (
                 f"P/C OI: {cd.get('pc_ratio', '?')} | "
                 f"Front IV: {cd.get('front_iv', '?')}% | "
                 f"IV Rank: {cd.get('iv_rank', '?')}% | "
                 f"Net GEX: {cd.get('total_net_gex', '?')}M | "
                 f"Term Shape: {cd.get('term_shape', '?')} | "
-                f"MQ Score: {mq.get('score', '?')} ({mq.get('regime', '?')})"
+                f"MQ Score: {mq.get('score', '?')} ({mq.get('regime', '?')}) | "
+                f"Dealer Bias: {mq.get('dealer_bias', '?')} | "
+                f"Flow Score: {mq.get('flow_score', '?')} | "
+                f"Funding Rate: {cd.get('funding', {}).get('rate', '?')}"
             )
             ga = cd.get("gamma_analysis", {})
             onchain_summary = (
+                f"Spot: ${spot:,.0f} | "
+                f"HVL: ${cd.get('hvl', '?'):,} | "
                 f"Flip mesafesi: {ga.get('flip_distance_pct', '?')}% | "
                 f"Flip yakın: {ga.get('flip_near', False)} | "
                 f"Neg pocket: {ga.get('in_neg_pocket', False)} | "
-                f"Max Pain: {cd.get('max_pain', '?')} | "
-                f"Expiry: {cd.get('expiry', {}).get('days_to_expiry', '?')} gün"
+                f"Max Pain: ${cd.get('max_pain', '?'):,} | "
+                f"Call Resistance: ${cd.get('call_resistance', '?'):,} | "
+                f"Put Support: ${cd.get('put_support', '?'):,} | "
+                f"Expiry: {cd.get('expiry', {}).get('days_to_expiry', '?')} gün | "
+                f"RV 30d: {cd.get('hv_30d', '?')}% | "
+                f"IV-RV spread: {round(cd.get('front_iv', 0) - cd.get('hv_30d', 0), 1)}%"
             )
+            # Ham strike/OI verisi (arxiv bulgusuna göre %30 daha iyi sinyal)
+            pos_nodes = cd.get("pos_gex_nodes", [])[:5]
+            neg_nodes = cd.get("neg_gex_nodes", [])[:5]
+            term_ivs = cd.get("term_ivs", [])[:4]
+            if pos_nodes or neg_nodes:
+                raw_strike_data = "HAM GEX STRIKE TABLOSU (spot etrafı):\n"
+                raw_strike_data += "Pozitif GEX (Call ağırlıklı, dealer long gamma):\n"
+                for n in pos_nodes:
+                    dist = round((n["strike"] - spot) / spot * 100, 1) if spot else 0
+                    raw_strike_data += f"  Strike ${n['strike']:,} | GEX +{n['net_gex']}M | spot'tan {dist:+.1f}%\n"
+                raw_strike_data += "Negatif GEX (Put ağırlıklı, dealer short gamma):\n"
+                for n in neg_nodes:
+                    dist = round((n["strike"] - spot) / spot * 100, 1) if spot else 0
+                    raw_strike_data += f"  Strike ${n['strike']:,} | GEX {n['net_gex']}M | spot'tan {dist:+.1f}%\n"
+            if term_ivs:
+                raw_strike_data += "TERM STRUCTURE (ATM IV per expiry):\n"
+                for t in term_ivs:
+                    raw_strike_data += f"  {t['expiry']}: IV {t['iv']}%\n"
+            # Taker flow verisi
+            tf = cd.get("taker_flow", {})
+            if tf:
+                raw_strike_data += (
+                    f"TAKER FLOW GEX (son 100 işlem):\n"
+                    f"  Taker alım: ${tf.get('taker_buy_volume_usd', 0):,.0f} | "
+                    f"Taker satım: ${tf.get('taker_sell_volume_usd', 0):,.0f}\n"
+                    f"  Net flow: ${tf.get('net_taker_flow_usd', 0):,.0f} | "
+                    f"Oran: {tf.get('flow_ratio', 0):+.2f}\n"
+                    f"  Dealer yönü: {tf.get('dealer_direction', '?')} | "
+                    f"Sinyal: {tf.get('flow_gex_signal', '?')} | "
+                    f"Call/Put taker: {tf.get('call_put_taker_ratio', '?')}\n"
+                )
 
     prompt = f"""Sen bir BTC options trading risk filtresinsin.
 Gamma sistemi {action} sinyali üretti (skor: {gamma_score:+.3f}, rejim: {regime}).
@@ -181,6 +223,8 @@ DERİBİT SENTIMENT:
 
 GEX & ON-CHAIN:
 {onchain_summary}
+
+{raw_strike_data}
 
 Karar kriterleri:
 - ONAYLA: Makro/sentiment {action} yönünü destekliyor veya nötr
@@ -799,6 +843,84 @@ def fetch_binance_closes(days=32):
         print(f"[RV] Deribit OHLCV hatasi: {e}")
         return []
 
+def fetch_taker_flow_gex(spot):
+    """
+    Taker flow bazlı GEX — Deribit son işlemlerden dealer yönü.
+    Arxiv bulgusuna göre OI bazlı GEX'ten %30 daha doğru sinyal.
+    Taker alım = dealer short (negatif gamma) → fiyat hareketi büyür
+    Taker satım = dealer long (pozitif gamma) → fiyat hareketi söner
+    """
+    try:
+        # Son BTC opsiyonlarındaki taker akışı
+        result = deribit_get("get_last_trades_by_currency", {
+            "currency": "BTC",
+            "kind": "option",
+            "count": 100
+        })
+        if not result or "trades" not in result:
+            return {"taker_buy_volume": 0, "taker_sell_volume": 0,
+                    "net_taker_flow": 0, "dealer_direction": "NEUTRAL",
+                    "flow_gex_signal": "NÖTR"}
+
+        trades = result["trades"]
+        taker_buy_usd = 0.0   # Taker alım → dealer short gamma
+        taker_sell_usd = 0.0  # Taker satım → dealer long gamma
+        call_taker_buy = 0.0
+        put_taker_buy = 0.0
+
+        for t in trades:
+            instrument = t.get("instrument_name", "")
+            direction = t.get("direction", "")
+            price = t.get("price", 0)
+            amount = t.get("amount", 0)
+            notional = price * amount * spot / 100  # USD notional
+
+            is_call = instrument.endswith("-C")
+            is_put = instrument.endswith("-P")
+
+            if direction == "buy":
+                taker_buy_usd += notional
+                if is_call: call_taker_buy += notional
+                if is_put: put_taker_buy += notional
+            else:
+                taker_sell_usd += notional
+
+        net_flow = taker_buy_usd - taker_sell_usd
+        total = taker_buy_usd + taker_sell_usd
+        flow_ratio = net_flow / total if total > 0 else 0
+
+        # Dealer yön tespiti
+        if flow_ratio > 0.2:
+            dealer_dir = "SHORT_GAMMA"   # Taker alımı → dealer short
+            signal = "BEARISH"           # Dealer vol büyütür
+        elif flow_ratio < -0.2:
+            dealer_dir = "LONG_GAMMA"    # Taker satımı → dealer long
+            signal = "BULLISH"           # Dealer vol söndürür
+        else:
+            dealer_dir = "NEUTRAL"
+            signal = "NÖTR"
+
+        # Call vs Put taker oranı
+        call_put_taker = round(call_taker_buy / put_taker_buy, 2) if put_taker_buy > 0 else 1.0
+
+        return {
+            "taker_buy_volume_usd": round(taker_buy_usd, 0),
+            "taker_sell_volume_usd": round(taker_sell_usd, 0),
+            "net_taker_flow_usd": round(net_flow, 0),
+            "flow_ratio": round(flow_ratio, 3),
+            "dealer_direction": dealer_dir,
+            "flow_gex_signal": signal,
+            "call_put_taker_ratio": call_put_taker,
+            "trade_count": len(trades)
+        }
+    except Exception as e:
+        print(f"[ERR] taker_flow_gex: {e}")
+        return {"taker_buy_volume_usd": 0, "taker_sell_volume_usd": 0,
+                "net_taker_flow_usd": 0, "flow_ratio": 0,
+                "dealer_direction": "NEUTRAL", "flow_gex_signal": "NÖTR",
+                "call_put_taker_ratio": 1.0, "trade_count": 0}
+
+
 def fetch_4h_closes_deribit(bars=60):
     """Deribit BTC-PERPETUAL 4H closes — Pyramid Katman 3 için.
     Deribit resolution=240 desteklemediği için 1H çekip 4'er grupluyoruz."""
@@ -1060,6 +1182,10 @@ def build_data():
     funding_manip = funding_manipulation_detector(_funding_history, mq.get("funding_rate", 0))
     carry_arb = carry_arb_calculator(funding_manip.get("annualized_pct", 0))
 
+    # Taker Flow GEX (arxiv bulgusuna göre OI bazlı GEX'ten %30 daha iyi)
+    taker_flow = fetch_taker_flow_gex(spot)
+    print(f"[INFO] Taker Flow: {taker_flow.get('flow_gex_signal')} | Dealer: {taker_flow.get('dealer_direction')} | Ratio: {taker_flow.get('flow_ratio')}")
+
     elapsed = round(time.time() - t0, 1)
     print(f"[INFO] Done in {elapsed}s — GEX: {total_net_gex}M, IV: {front_iv}%, Regime: {regime}")
 
@@ -1121,6 +1247,7 @@ def build_data():
         front_oi_usd=sum(float(s.get("open_interest",0)) for s in summaries[:50])*spot,
         total_oi_usd=sum(float(s.get("open_interest",0)) for s in summaries)*spot,
     ) if TALEB_OK else None), "flip_zone": _compute_flip_zone(spot, hvl), "_source": "deribit_live",
+        "taker_flow": taker_flow,
         "_elapsed": elapsed,
     }
 

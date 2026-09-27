@@ -845,11 +845,61 @@ def fetch_binance_closes(days=32):
 
 def fetch_taker_flow_gex(spot):
     """
-    Taker flow bazlı GEX — Deribit son işlemlerden dealer yönü.
-    Arxiv bulgusuna göre OI bazlı GEX'ten %30 daha doğru sinyal.
-    Taker alım = dealer short (negatif gamma) → fiyat hareketi büyür
-    Taker satım = dealer long (pozitif gamma) → fiyat hareketi söner
+    Taker flow bazlı GEX — deribit_flow_fetcher.py (Glassnode metodolojisi).
+    Near-ATM (±%5) ve geniş (±%25) ayrımı, call+put her ikisi işleniyor.
     """
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from deribit_flow_fetcher import DeribitFlowFetcher
+        fetcher = DeribitFlowFetcher(currency="BTC")
+        
+        # Son 5 dakika taker flow
+        since_ms = int((time.time() - 300) * 1000)
+        flow = fetcher.fetch_trade_flow_increment(since_ms)
+        oi_raw = fetcher.fetch_oi_weighted_put_delta()
+        oi_delta = oi_raw if isinstance(oi_raw, dict) else {}
+        
+        near_atm = flow.get("near_atm_flow", {}) if isinstance(flow, dict) else {}
+        broad = flow.get("broad_flow", {}) if isinstance(flow, dict) else {}
+        
+        net_near = near_atm.get("net_taker_usd", 0)
+        net_broad = broad.get("net_taker_usd", 0)
+        
+        if net_near > 1000:
+            dealer_dir = "SHORT_GAMMA"
+            signal = "BEARISH"
+        elif net_near < -1000:
+            dealer_dir = "LONG_GAMMA"
+            signal = "BULLISH"
+        else:
+            dealer_dir = "NEUTRAL"
+            signal = "NÖTR"
+        
+        total = broad.get("total_volume_usd", 1)
+        flow_ratio = round(net_broad / total, 3) if total else 0
+        
+        call_buy = near_atm.get("call_taker_buy_usd", 0)
+        put_buy = near_atm.get("put_taker_buy_usd", 0)
+        cp_ratio = round(call_buy / put_buy, 2) if put_buy > 100 else 1.0
+        
+        return {
+            "taker_buy_volume_usd": round(near_atm.get("taker_buy_usd", 0), 0),
+            "taker_sell_volume_usd": round(near_atm.get("taker_sell_usd", 0), 0),
+            "net_taker_flow_usd": round(net_near, 0),
+            "net_broad_flow_usd": round(net_broad, 0),
+            "flow_ratio": flow_ratio,
+            "dealer_direction": dealer_dir,
+            "flow_gex_signal": signal,
+            "call_put_taker_ratio": cp_ratio,
+            "near_atm_net_gamma": oi_delta.get("near_atm_net_gamma", 0),
+            "oi_weighted_put_delta": oi_delta.get("oi_weighted_put_delta", 0),
+            "trade_count": flow.get("trade_count", 0),
+            "source": "deribit_flow_fetcher_v2"
+        }
+    except Exception as e:
+        print(f"[ERR] taker_flow_gex (flow_fetcher): {e}")
+        # Fallback: basit versiyon
     try:
         # Son BTC opsiyonlarındaki taker akışı
         result = deribit_get("get_last_trades_by_currency", {
@@ -918,7 +968,8 @@ def fetch_taker_flow_gex(spot):
         return {"taker_buy_volume_usd": 0, "taker_sell_volume_usd": 0,
                 "net_taker_flow_usd": 0, "flow_ratio": 0,
                 "dealer_direction": "NEUTRAL", "flow_gex_signal": "NÖTR",
-                "call_put_taker_ratio": 1.0, "trade_count": 0}
+                "call_put_taker_ratio": 1.0, "trade_count": 0,
+                "source": "fallback_simple"}
 
 
 def fetch_4h_closes_deribit(bars=60):
